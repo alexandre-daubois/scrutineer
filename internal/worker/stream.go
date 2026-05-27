@@ -14,6 +14,7 @@ const (
 	KindTool     = "tool"
 	KindResult   = "result"
 	KindError    = "error"
+	KindSession  = "session"
 
 	lineLimit = 300
 )
@@ -38,15 +39,16 @@ type Usage struct {
 }
 
 type streamMessage struct {
-	Type     string          `json:"type"`
-	Subtype  string          `json:"subtype"`
-	Message  *assistantMsg   `json:"message"`
-	Result   json.RawMessage `json:"result"`
-	CostUSD  *float64        `json:"total_cost_usd"`
-	Duration *int64          `json:"duration_ms"`
-	NumTurns *int            `json:"num_turns"`
-	Usage    *Usage          `json:"usage"`
-	Error    json.RawMessage `json:"error"`
+	Type      string          `json:"type"`
+	Subtype   string          `json:"subtype"`
+	Message   *assistantMsg   `json:"message"`
+	Result    json.RawMessage `json:"result"`
+	CostUSD   *float64        `json:"total_cost_usd"`
+	Duration  *int64          `json:"duration_ms"`
+	NumTurns  *int            `json:"num_turns"`
+	Usage     *Usage          `json:"usage"`
+	Error     json.RawMessage `json:"error"`
+	SessionID string          `json:"session_id"`
 }
 
 type assistantMsg struct {
@@ -80,6 +82,10 @@ func ParseStream(r io.Reader, emit func(Event)) {
 			continue
 		}
 		switch msg.Type {
+		case "system":
+			if msg.Subtype == "init" && msg.SessionID != "" {
+				emit(Event{Kind: KindSession, Text: msg.SessionID})
+			}
 		case "assistant":
 			emitAssistant(msg.Message, emit)
 		case "result":
@@ -180,6 +186,8 @@ func FormatEvent(e Event) string {
 		return fmt.Sprintf("[result] cost=$%.4f turns=%d %s", e.CostUSD, e.Turns, truncate(e.Text))
 	case KindError:
 		return "[error] " + e.Text
+	case KindSession:
+		return "[session] " + e.Text
 	default:
 		return e.Text
 	}

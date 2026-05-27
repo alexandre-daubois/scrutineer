@@ -47,3 +47,37 @@ func TestFormatEvent(t *testing.T) {
 		t.Errorf("got %q", s)
 	}
 }
+
+func TestParseStream_CapturesSessionIDFromInit(t *testing.T) {
+	in := `
+{"type":"system","subtype":"init","cwd":"/work","session_id":"9e4719f0-a952-4263-89fc-cbae9657a600","model":"claude-opus-4-7"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]},"session_id":"9e4719f0-a952-4263-89fc-cbae9657a600"}
+`
+	var got []Event
+	ParseStream(strings.NewReader(in), func(e Event) { got = append(got, e) })
+
+	var sessionEv *Event
+	for i := range got {
+		if got[i].Kind == KindSession {
+			sessionEv = &got[i]
+			break
+		}
+	}
+	if sessionEv == nil {
+		t.Fatalf("no session event emitted; got %+v", got)
+	}
+	if sessionEv.Text != "9e4719f0-a952-4263-89fc-cbae9657a600" {
+		t.Errorf("session id = %q, want UUID", sessionEv.Text)
+	}
+}
+
+func TestParseStream_OtherSystemSubtypesDoNotEmitSession(t *testing.T) {
+	in := `{"type":"system","subtype":"hook_started","session_id":"deadbeef-dead-beef-dead-beefdeadbeef"}` + "\n"
+	var got []Event
+	ParseStream(strings.NewReader(in), func(e Event) { got = append(got, e) })
+	for _, e := range got {
+		if e.Kind == KindSession {
+			t.Errorf("session event must only come from system/init, got from %+v", e)
+		}
+	}
+}

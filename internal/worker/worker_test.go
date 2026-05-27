@@ -144,6 +144,88 @@ func TestWorker_maxTurnsReachedCompletesNotFails(t *testing.T) {
 	}
 }
 
+// sessionEmittingRunner emits a KindSession event mid-run and returns
+// a configurable result. Used to assert worker persists the session id
+// before the run finishes.
+type sessionEmittingRunner struct {
+	sessionID string
+	res       SkillResult
+	err       error
+}
+
+func (s sessionEmittingRunner) RunSkill(_ context.Context, _ SkillJob, emit func(Event)) (SkillResult, error) {
+	emit(Event{Kind: KindSession, Text: s.sessionID})
+	return s.res, s.err
+}
+
+func TestWorker_PersistsSessionIDBeforeFinish(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://example.com/x", Name: "x"}
+	gdb.Create(&repo)
+	skill := db.Skill{Name: "deep", Body: "b", Active: true, Source: "ui", Version: 1}
+	gdb.Create(&skill)
+	scan := db.Scan{RepositoryID: repo.ID, Kind: JobSkill, Status: db.ScanQueued, SkillID: &skill.ID}
+	gdb.Create(&scan)
+
+	w := &Worker{
+		DB:             gdb,
+		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DataDir:        t.TempDir(),
+		Runner:         sessionEmittingRunner{sessionID: "abc-123", err: errors.New("boom mid-run")},
+		PrepareRepoSrc: stubPrepareRepoSrc,
+	}
+	body, _ := json.Marshal(queue.Payload{ScanID: scan.ID})
+	if err := w.wrap(w.doSkill)(context.Background(), body); err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
+
+	var got db.Scan
+	gdb.First(&got, scan.ID)
+	if got.Status != db.ScanFailed {
+		t.Fatalf("status = %s, want failed", got.Status)
+	}
+	if got.SessionID != "abc-123" {
+		t.Errorf("session_id = %q on failed scan, want %q (must survive failure for resume)", got.SessionID, "abc-123")
+	}
+}
+
+func TestWorker_ClearsSessionIDWhenDone(t *testing.T) {
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "sc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := db.Repository{URL: "https://example.com/x", Name: "x"}
+	gdb.Create(&repo)
+	skill := db.Skill{Name: "deep", Body: "b", Active: true, Source: "ui", Version: 1}
+	gdb.Create(&skill)
+	scan := db.Scan{RepositoryID: repo.ID, Kind: JobSkill, Status: db.ScanQueued, SkillID: &skill.ID, SessionID: "prior-session"}
+	gdb.Create(&scan)
+
+	w := &Worker{
+		DB:             gdb,
+		Log:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DataDir:        t.TempDir(),
+		Runner:         sessionEmittingRunner{sessionID: "new-session", res: SkillResult{Report: ""}},
+		PrepareRepoSrc: stubPrepareRepoSrc,
+	}
+	body, _ := json.Marshal(queue.Payload{ScanID: scan.ID})
+	if err := w.wrap(w.doSkill)(context.Background(), body); err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
+
+	var got db.Scan
+	gdb.First(&got, scan.ID)
+	if got.Status != db.ScanDone {
+		t.Fatalf("status = %s, want done", got.Status)
+	}
+	if got.SessionID != "" {
+		t.Errorf("session_id = %q on done scan, want cleared", got.SessionID)
+	}
+}
+
 func TestWorker_workspaceCleanup(t *testing.T) {
 	gdb, err := db.Open(filepath.Join(t.TempDir(), "wc.db"))
 	if err != nil {

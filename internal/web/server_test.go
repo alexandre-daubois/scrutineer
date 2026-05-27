@@ -2242,6 +2242,70 @@ func TestRetry_preservesSubPath(t *testing.T) {
 	}
 }
 
+func TestRetry_propagatesSessionID(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://example.com/x.git", Name: "x"}
+	s.DB.Create(&repo)
+	skill := db.Skill{Name: "deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
+	s.DB.Create(&skill)
+	orig := db.Scan{
+		RepositoryID: repo.ID, Kind: "skill", Status: db.ScanFailed,
+		SkillID: &skill.ID, SkillName: "deep-dive",
+		SessionID:  "9e4719f0-a952-4263-89fc-cbae9657a600",
+		FinishedAt: new(time.Now()),
+	}
+	s.DB.Create(&orig)
+
+	req := httptest.NewRequest("POST", fmt.Sprintf("/scans/%d/retry", orig.ID), nil)
+	req.Host = testHost
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("retry status %d: %s", w.Code, w.Body)
+	}
+
+	var fresh db.Scan
+	s.DB.Where("id != ?", orig.ID).First(&fresh)
+	if fresh.SessionID != orig.SessionID {
+		t.Errorf("retry dropped session_id: got %q, want %q", fresh.SessionID, orig.SessionID)
+	}
+}
+
+func TestScansRetryFailed_propagatesSessionID(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://example.com/x.git", Name: "x"}
+	s.DB.Create(&repo)
+	skill := db.Skill{Name: "deep-dive", Description: "x", Body: "b", Active: true, Source: "ui", Version: 1}
+	s.DB.Create(&skill)
+	orig := db.Scan{
+		RepositoryID: repo.ID, Kind: "skill", Status: db.ScanFailed,
+		StatusPriority: db.StatusPriorityFor(db.ScanFailed),
+		SkillID:        &skill.ID, SkillName: "deep-dive",
+		SessionID: "abc-resume-id",
+	}
+	s.DB.Create(&orig)
+
+	req := httptest.NewRequest("POST", "/scans/retry-failed", nil)
+	req.Host = testHost
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+
+	var fresh db.Scan
+	s.DB.Where("id != ?", orig.ID).First(&fresh)
+	if fresh.SessionID != "abc-resume-id" {
+		t.Errorf("bulk retry dropped session_id: got %q", fresh.SessionID)
+	}
+}
+
 func TestScansRetryFailed(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()

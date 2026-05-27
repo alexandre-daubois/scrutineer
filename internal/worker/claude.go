@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"scrutineer/internal/db"
@@ -54,6 +55,11 @@ type SkillJob struct {
 	// cache). When true the runner skips its own clone and reads HEAD
 	// from the existing tree.
 	SrcReady bool
+	// ResumeSessionID, when non-empty, is the claude-code session UUID
+	// from a prior run of this scan. The runner builds args as
+	// `claude -p --resume <id>` with a short continuation prompt instead
+	// of replaying the activation prompt from turn 0.
+	ResumeSessionID string
 }
 
 type SkillResult struct {
@@ -91,6 +97,13 @@ func (l LocalClaude) RunSkill(ctx context.Context, sj SkillJob, emit func(Event)
 	if sj.OutputFile != "" {
 		outPath = filepath.Join(work, sj.OutputFile)
 		_ = os.Remove(outPath)
+	}
+
+	if sj.ResumeSessionID != "" {
+		if err := linkResumeSession(sj.ResumeSessionID, work); err != nil {
+			emit(Event{Kind: KindText, Text: "resume: " + err.Error() + "; starting fresh"})
+			sj.ResumeSessionID = ""
+		}
 	}
 
 	args := buildClaudeArgs(sj, l.Effort, l.MaxTurns)
@@ -179,6 +192,9 @@ func buildClaudeArgs(sj SkillJob, effort string, globalMaxTurns int) []string {
 		"--verbose",
 		"--model", sj.Model,
 	}
+	if sj.ResumeSessionID != "" {
+		args = append(args, "--resume", sj.ResumeSessionID)
+	}
 	if sj.AllowedTools != "" {
 		args = append(args,
 			"--permission-mode", "acceptEdits",
@@ -191,7 +207,11 @@ func buildClaudeArgs(sj SkillJob, effort string, globalMaxTurns int) []string {
 		args = append(args, "--effort", effort)
 	}
 	args = append(args, "--max-turns", strconv.Itoa(effectiveMaxTurns(sj.MaxTurns, globalMaxTurns)))
-	args = append(args, buildSkillPrompt(sj.Name, sj.OutputFile))
+	if sj.ResumeSessionID != "" {
+		args = append(args, "Continue the task you were working on.")
+	} else {
+		args = append(args, buildSkillPrompt(sj.Name, sj.OutputFile))
+	}
 	return args
 }
 
@@ -205,6 +225,78 @@ func effectiveMaxTurns(perSkill, global int) int {
 		return global
 	}
 	return DefaultSkillMaxTurns
+}
+
+// isValidSessionID accepts the lowercase-hex-and-dashes shape claude
+// emits (UUID v4). Defence in depth: the session id is interpolated
+// into a filesystem path, and we want to refuse anything that could
+// traverse out of `<base>/projects/...`.
+func isValidSessionID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// linkResumeSession makes the prior claude session jsonl reachable from
+// the new workspace's cwd. claude stores sessions under
+// `<store>/projects/<encoded-cwd>/<id>.jsonl` where <encoded-cwd> is the
+// cwd with `/` replaced by `-`. When the UI retries a failed scan we
+// spin up a new workRoot, so the encoded path changes and the prior
+// session is invisible to `--resume`. Symlinking from the original
+// location into the new path papers over that without forcing every
+// runner to share a single cwd. Falls back to a copy when the symlink
+// fails (e.g. cross-device).
+func linkResumeSession(sessionID, cwd string) error {
+	if !isValidSessionID(sessionID) {
+		return fmt.Errorf("invalid session id %q", sessionID)
+	}
+	base := os.Getenv("CLAUDE_CONFIG_DIR")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("locate home: %w", err)
+		}
+		base = filepath.Join(home, ".claude")
+	}
+	// claude calls getcwd, which returns the canonical path. On macOS
+	// `/tmp` is a symlink to `/private/tmp`, so filepath.Abs alone gives
+	// the wrong encoding for the session-store lookup.
+	abs, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		abs, err = filepath.Abs(cwd)
+		if err != nil {
+			return err
+		}
+	}
+	target := filepath.Join(base, "projects", strings.ReplaceAll(abs, "/", "-"), sessionID+".jsonl")
+	if _, err := os.Stat(target); err == nil {
+		return nil
+	}
+	matches, _ := filepath.Glob(filepath.Join(base, "projects", "*", sessionID+".jsonl"))
+	if len(matches) == 0 {
+		return fmt.Errorf("session %s not found in %s/projects", sessionID, base)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil { //nolint:mnd
+		return err
+	}
+	if err := os.Symlink(matches[0], target); err == nil {
+		return nil
+	}
+	src, err := os.ReadFile(matches[0])
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(target, src, 0o644) //nolint:mnd
 }
 
 // buildSkillPrompt is the activation prompt handed to claude. It's a thin

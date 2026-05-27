@@ -42,6 +42,11 @@ func (d DockerRunner) image() string {
 // /work read-write so claude can read the skill files and write its output.
 // Egress is routed through scrutineer's allowlisting proxy on the host;
 // see EgressProxy. tmpfs/cap-drop rules mirror the local runner's intent.
+//
+// A persistent claude config directory shared across runs is mounted at
+// /scrutineer-cfg (with CLAUDE_CONFIG_DIR pointing at it) so the session
+// store survives container exit. Without it `claude -p --resume <id>`
+// cannot find the prior session.
 func (d DockerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Event)) (SkillResult, error) {
 	var src string
 	if sj.SrcReady {
@@ -56,6 +61,11 @@ func (d DockerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Event
 	commit := gitHead(src)
 	work := sj.WorkRoot
 	absWork, _ := filepath.Abs(work)
+	cfgDir := filepath.Join(filepath.Dir(work), ".claude-runtime")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		return SkillResult{}, fmt.Errorf("mkdir claude cfg: %w", err)
+	}
+	absCfg, _ := filepath.Abs(cfgDir)
 
 	var outPath string
 	if sj.OutputFile != "" {
@@ -78,6 +88,8 @@ func (d DockerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Event
 		"-e", "SEMGREP_SEND_METRICS=off",
 		"--tmpfs", "/tmp:rw,noexec,nosuid,size=256m",
 		"-v", absWork + ":/work",
+		"-v", absCfg + ":/scrutineer-cfg",
+		"-e", "CLAUDE_CONFIG_DIR=/scrutineer-cfg",
 		"-w", "/work",
 		"--add-host", HostGatewayAlias + ":" + gwTarget,
 	}

@@ -156,6 +156,10 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 				scan.CacheReadTokens = e.Usage.CacheReadTokens
 				scan.CacheWriteTokens = e.Usage.CacheWriteTokens
 			}
+			if e.Kind == KindSession && e.Text != "" && e.Text != scan.SessionID {
+				scan.SessionID = e.Text
+				w.DB.Model(&db.Scan{}).Where("id = ?", scan.ID).Update("session_id", e.Text)
+			}
 			w.publish(scan.ID, scan.RepositoryID, "scan-log", line+"\n")
 		}
 
@@ -193,6 +197,9 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 		default:
 			scan.Status = db.ScanDone
 			scan.Report = report
+		}
+		if scan.Status == db.ScanDone {
+			scan.SessionID = ""
 		}
 		scan.StatusPriority = db.StatusPriorityFor(scan.Status)
 		if saveErr := w.DB.Save(&scan).Error; saveErr != nil {

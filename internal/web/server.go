@@ -1414,6 +1414,10 @@ type ScanOpts struct {
 	DependentID *uint
 	SubPath     string
 	Ref         string
+	// SessionID, when non-empty, is inherited from a prior failed scan so
+	// the new run can `claude --resume <id>` instead of starting from
+	// turn 0. Set only by retry paths.
+	SessionID string
 }
 
 func (s *Server) enqueueSkill(ctx context.Context, repoID, skillID uint, model string) (uint, error) {
@@ -1465,6 +1469,7 @@ func (s *Server) enqueueSkillWith(ctx context.Context, repoID, skillID uint, opt
 		Ref:            opts.Ref,
 		SkillsRepoSHA:  s.SkillsRepoSHA,
 		APIToken:       NewAPIToken(),
+		SessionID:      opts.SessionID,
 	}
 	if err := s.DB.Create(&scan).Error; err != nil {
 		return 0, err

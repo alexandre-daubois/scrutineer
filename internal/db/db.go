@@ -128,6 +128,13 @@ type Scan struct {
 	DependentID *uint  `gorm:"index"`
 	APIToken    string `gorm:"index"`
 
+	// SessionID is the claude-code session UUID captured from the
+	// stream-json `system/init` event. Set as soon as it arrives so a
+	// crash-and-redeliver (or UI retry that copies it forward) can pass
+	// `--resume <id>` instead of replaying the run from turn 0. Cleared
+	// when the scan reaches ScanDone so a deliberate re-run starts fresh.
+	SessionID string `gorm:"index"`
+
 	// StatusPriority is a denormalised sort key so the scans index can use
 	// an index instead of evaluating a CASE on every row. 0 = running,
 	// 1 = queued, 2 = everything else. Set by StatusPriorityFor().
