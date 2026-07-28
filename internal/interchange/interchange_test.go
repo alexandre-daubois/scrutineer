@@ -98,6 +98,13 @@ func validStatements() map[string]Statement {
 			Commit:      "abc123",
 			AuditedAt:   audited,
 		}),
+		"certificate-v2": NewCertificate(CertificatePredicate{
+			Repository: "https://github.com/acme/lib",
+			Advisory:   "GHSA-xxxx-yyyy-zzzz",
+			Status:     "bypass",
+			Commit:     "abc123",
+			AuditedAt:  audited,
+		}),
 		"claim": NewClaim(strings.Repeat("ab", 32), ClaimPredicate{
 			Contact: "security@example.com",
 		}),
@@ -213,6 +220,18 @@ func TestValidateRejects(t *testing.T) {
 		})},
 		{"certificate not fixed", mutate(t, valid["certificate"], func(m map[string]any) {
 			m["predicate"].(map[string]any)["status"] = "vulnerable"
+		})},
+		// The tier split is enforced by the schema, not just by the
+		// constructor: a v1 record must never carry a non-clean verdict,
+		// because v1 is what the public feed publishes.
+		{"certificate v1 with a non-clean verdict", mutate(t, valid["certificate"], func(m map[string]any) {
+			m["predicate"].(map[string]any)["status"] = "bypass"
+		})},
+		{"certificate v2 with the clean verdict", mutate(t, valid["certificate-v2"], func(m map[string]any) {
+			m["predicate"].(map[string]any)["status"] = "fixed"
+		})},
+		{"certificate v2 leaking severity", mutate(t, valid["certificate-v2"], func(m map[string]any) {
+			m["predicate"].(map[string]any)["severity"] = "critical"
 		})},
 		{"certificate bad timestamp", mutate(t, valid["certificate"], func(m map[string]any) {
 			m["predicate"].(map[string]any)["audited_at"] = "yesterday"

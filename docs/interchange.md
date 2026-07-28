@@ -3,9 +3,10 @@
 Scrutineer instances (and non-scrutineer tools) can exchange a small set of
 federation records without ever exchanging finding bodies. This page documents
 the interchange format foundations: the record envelope, the shipped JSON
-schema, the salted finding hash, and the claim-check endpoint. Feeds (public
-and members-only git repositories), the export/import jobs, and Sigstore
-signing are future work and not described here.
+schema, the on-disk record layout, the salted finding hash, and the
+claim-check endpoint. The feeds themselves (public and members-only git
+repositories), the export/import jobs, and Sigstore signing are future work
+and not described here.
 
 ## Records
 
@@ -16,10 +17,20 @@ envelope: `_type`, `subject`, `predicateType`, `predicate`. The
 
 | Kind | `predicateType` | Meaning |
 |------|-----------------|---------|
-| certificate | `.../scrutineer/interchange/certificate/v1` | An advisory's advertised fix was re-audited on the named repository and held. The local `GET /advisories/{id}/certificate.json` download attests the same audit but in a different, richer format (severity, CVSS, evidence) that is NOT an interchange record and must never be fed into a federation feed. |
+| certificate | `.../scrutineer/interchange/certificate/v1` | An advisory's advertised fix was re-audited on the named repository and held. `status` is pinned to `fixed`. The local `GET /advisories/{id}/certificate.json` download attests the same audit but in a different, richer format (severity, CVSS, evidence) that is NOT an interchange record and must never be fed into a federation feed. |
+| certificate | `.../scrutineer/interchange/certificate/v2` | Same shape, verdict widened to `bypass`, `variant` or `regressed`: the advertised fix did NOT hold. |
 | claim | `.../scrutineer/interchange/claim/v1` | The publishing instance holds a finding whose salted hash is the subject digest, plus a contact to coordinate through. |
 | optout | `.../scrutineer/interchange/optout/v1` | The repository's maintainer asked federated instances to neither scan the repository nor contact them about it. |
 | route | `.../scrutineer/interchange/route/v1` | The validated disclosure route for a repository (email, GHSA URL, registry owner handle, or SECURITY.md URL), so other instances can skip re-deriving it. |
+
+Certificates carry two revisions because the verdict decides which tier may
+carry the record, so the split has to be visible in the `predicateType`
+alone: a clean certificate says nothing about a live weakness, while a
+non-clean one names a repository whose advertised fix does not hold. v1 stays
+pinned to the clean case, so a consumer already reading v1 records keeps
+handling exactly the values it always has and no coordinated update was
+needed to introduce v2. `interchange.NewCertificate` picks the revision from
+the verdict, and the schema refuses the crossed pairings in both directions.
 
 The normative contract is
 [`internal/interchange/interchange.schema.json`](../internal/interchange/interchange.schema.json),
@@ -29,6 +40,30 @@ never carry finding bodies, severity, CVSS, or health scores, and a record
 that smuggles one in fails validation. The envelope itself stays open so
 spec-legal in-toto extensions (subject `uri`, extra digest algorithms, ...)
 from non-scrutineer producers validate fine.
+
+## Record layout
+
+A set of records is stored as a directory a git remote can serve, one file
+per record at `<kind>/<subject-digest>.json`, or
+`<kind>/<subject-digest>.json.age` when the set is encrypted. Deriving the
+name from the record itself means an unchanged record keeps its own file, so
+a commit over such a directory diffs only what actually changed, and a record
+that stops applying is deleted rather than left beside its replacement. Files
+that are not records (`README`, `LICENSE`, `.git`) are never touched: only
+the kind directories are rewritten.
+
+An encrypted record is left alone by comparing plaintexts, not bytes: age
+derives a fresh file key per call, so re-encrypting an unchanged record
+produces different ciphertext every time and a byte comparison would rewrite
+everything on every pass. `interchange.WriteFeed` therefore refuses to write
+an encrypted set without an identity as well as recipients: without one it
+cannot read back what it published.
+
+`interchange.Tier` names which kinds a set may carry, enforced at write time
+so a misrouted record fails rather than leaking: the public tier takes
+opt-outs, routes and clean `certificate/v1` records, the members tier takes
+`certificate/v2` only, and claims are on neither, since publishing a hash set
+would hand a member something to enumerate offline.
 
 ## The salted finding hash
 

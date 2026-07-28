@@ -15,6 +15,7 @@
     "predicateType": {
       "enum": [
         "https://github.com/alpha-omega-security/scrutineer/interchange/certificate/v1",
+        "https://github.com/alpha-omega-security/scrutineer/interchange/certificate/v2",
         "https://github.com/alpha-omega-security/scrutineer/interchange/claim/v1",
         "https://github.com/alpha-omega-security/scrutineer/interchange/optout/v1",
         "https://github.com/alpha-omega-security/scrutineer/interchange/route/v1"
@@ -26,6 +27,10 @@
     {
       "if": { "properties": { "predicateType": { "const": "https://github.com/alpha-omega-security/scrutineer/interchange/certificate/v1" } }, "required": ["predicateType"] },
       "then": { "properties": { "predicate": { "$ref": "#/$defs/certificate" } } }
+    },
+    {
+      "if": { "properties": { "predicateType": { "const": "https://github.com/alpha-omega-security/scrutineer/interchange/certificate/v2" } }, "required": ["predicateType"] },
+      "then": { "properties": { "predicate": { "$ref": "#/$defs/certificateV2" } } }
     },
     {
       "if": { "properties": { "predicateType": { "const": "https://github.com/alpha-omega-security/scrutineer/interchange/claim/v1" } }, "required": ["predicateType"] },
@@ -66,6 +71,20 @@
         "advisory": { "type": "string", "minLength": 1 },
         "advisory_url": { "type": "string" },
         "status": { "const": "fixed" },
+        "commit": { "type": "string" },
+        "audited_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "certificateV2": {
+      "description": "An advisory's advertised fix was re-audited on the named repository and did NOT hold: it can be circumvented (bypass), left the same bug class open elsewhere (variant), or the original reproduction fires again (regressed). Same shape as certificate/v1 with the verdict widened; the split exists so the clean case keeps a closed value set on the public feed while this revision, which points at a live weakness in a named repository, travels only on the encrypted members feed.",
+      "type": "object",
+      "required": ["repository", "advisory", "status", "audited_at"],
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "advisory": { "type": "string", "minLength": 1 },
+        "advisory_url": { "type": "string" },
+        "status": { "enum": ["bypass", "variant", "regressed"] },
         "commit": { "type": "string" },
         "audited_at": { "type": "string", "format": "date-time" }
       }

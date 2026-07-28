@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -27,12 +28,75 @@ const StatementType = "https://in-toto.io/Statement/v1"
 // Predicate type URIs, one per record kind. The path under the project
 // URL names the kind and its schema revision; bump the trailing version
 // on any breaking predicate change.
+//
+// Certificates come in two revisions because the verdict decides which
+// feed may carry the record: v1 is the clean case and stays pinned to
+// "fixed", so a consumer of the public feed still handles exactly the
+// values it always has, and v2 carries the non-clean verdicts, which name
+// a repository whose advertised fix does not hold and therefore travel
+// only on the encrypted members feed.
 const (
-	PredicateTypeCertificate = "https://github.com/alpha-omega-security/scrutineer/interchange/certificate/v1"
-	PredicateTypeClaim       = "https://github.com/alpha-omega-security/scrutineer/interchange/claim/v1"
-	PredicateTypeOptOut      = "https://github.com/alpha-omega-security/scrutineer/interchange/optout/v1"
-	PredicateTypeRoute       = "https://github.com/alpha-omega-security/scrutineer/interchange/route/v1"
+	PredicateTypeCertificate   = "https://github.com/alpha-omega-security/scrutineer/interchange/certificate/v1"
+	PredicateTypeCertificateV2 = "https://github.com/alpha-omega-security/scrutineer/interchange/certificate/v2"
+	PredicateTypeClaim         = "https://github.com/alpha-omega-security/scrutineer/interchange/claim/v1"
+	PredicateTypeOptOut        = "https://github.com/alpha-omega-security/scrutineer/interchange/optout/v1"
+	PredicateTypeRoute         = "https://github.com/alpha-omega-security/scrutineer/interchange/route/v1"
 )
+
+// CertificateStatusFixed is the clean fix-audit verdict, the only one a
+// certificate/v1 record may carry.
+const CertificateStatusFixed = "fixed"
+
+// CertificateStatusesV2 are the non-clean verdicts certificate/v2 accepts,
+// mirroring the enum in interchange.schema.json. Sorted, so a query built
+// from it has stable text. A verdict outside this set and
+// CertificateStatusFixed is not publishable at all: exporters filter on it
+// rather than handing the schema a record it will reject, since a single
+// unpublishable row would otherwise fail the whole export.
+var CertificateStatusesV2 = []string{"bypass", "regressed", "variant"}
+
+// recordKinds names the feed subdirectory each predicate type is filed
+// under. Both certificate revisions share one directory: they are the same
+// record kind at two schema revisions, and the feed tiers already keep
+// them apart. Absence from this map means "not an interchange record".
+var recordKinds = map[string]string{
+	PredicateTypeCertificate:   "certificate",
+	PredicateTypeCertificateV2: "certificate",
+	PredicateTypeClaim:         "claim",
+	PredicateTypeOptOut:        "optout",
+	PredicateTypeRoute:         "route",
+}
+
+// Kind returns the short record-kind name for a predicate type, used as
+// the feed subdirectory. The empty string means the type is unknown.
+func Kind(predicateType string) string { return recordKinds[predicateType] }
+
+// Tier names a federation feed. The public feed is a plain git repository
+// anyone may clone, so it carries only records that say nothing about a
+// live vulnerability: opt-outs, disclosure routes, and clean certificates.
+// The members feed is age-encrypted and carries the non-clean
+// certificates. Claims are on neither: publishing a hash set would hand
+// members something to enumerate offline, so POST /claim-check answers one
+// hash at a time instead.
+type Tier string
+
+const (
+	TierPublic  Tier = "public"
+	TierMembers Tier = "members"
+)
+
+// Carries reports whether tier may publish a record of this predicate type.
+func (t Tier) Carries(predicateType string) bool {
+	switch t {
+	case TierPublic:
+		return predicateType == PredicateTypeCertificate ||
+			predicateType == PredicateTypeOptOut ||
+			predicateType == PredicateTypeRoute
+	case TierMembers:
+		return predicateType == PredicateTypeCertificateV2
+	}
+	return false
+}
 
 // Statement is the in-toto Statement v1 envelope. All four fields are
 // required by the in-toto spec and by interchange.schema.json, so none
@@ -93,14 +157,19 @@ type RoutePredicate struct {
 // subject names the advisory and digests the canonical repository URL
 // plus the uppercased advisory id, so the same certificate from two
 // instances shares a subject whatever case or padding each stored the
-// id with.
+// id with. The predicate type follows the verdict, which is what routes
+// the record to the public or the members feed.
 func NewCertificate(p CertificatePredicate) Statement {
 	p.Repository = CanonicalRepo(p.Repository)
 	p.Advisory = strings.TrimSpace(p.Advisory)
+	predicateType := PredicateTypeCertificateV2
+	if p.Status == CertificateStatusFixed {
+		predicateType = PredicateTypeCertificate
+	}
 	return Statement{
 		Type:          StatementType,
 		Subject:       []ResourceDescriptor{{Name: p.Advisory, Digest: sha256Digest(p.Repository + "\x00" + strings.ToUpper(p.Advisory))}},
-		PredicateType: PredicateTypeCertificate,
+		PredicateType: predicateType,
 		Predicate:     p,
 	}
 }
@@ -185,4 +254,20 @@ func Validate(raw []byte) error {
 		return fmt.Errorf("parse record: %w", err)
 	}
 	return schema.Validate(inst)
+}
+
+// DecodePredicate re-decodes a statement's predicate into p, which must be
+// a pointer to the predicate struct matching the statement's type. A
+// statement read off a feed carries its predicate as a generic map; this
+// gives importers the typed view without a second parse of the whole
+// record.
+func DecodePredicate(s Statement, p any) error {
+	raw, err := json.Marshal(s.Predicate)
+	if err != nil {
+		return fmt.Errorf("re-encode predicate: %w", err)
+	}
+	if err := json.Unmarshal(raw, p); err != nil {
+		return fmt.Errorf("decode predicate: %w", err)
+	}
+	return nil
 }
