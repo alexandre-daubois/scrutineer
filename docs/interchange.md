@@ -59,6 +59,24 @@ everything on every pass. `interchange.WriteFeed` therefore refuses to write
 an encrypted set without an identity as well as recipients: without one it
 cannot read back what it published.
 
+Keeping a record's existing ciphertext means access to it is frozen at the
+recipient set it was encrypted to, so an encrypted directory also holds a
+`.recipients` file: the sha256 of that set, its keys trimmed, lowercased,
+sorted, deduplicated and joined with newlines. Nothing in an age file names
+its own recipients, so this digest is the only way to notice a membership
+change; when it differs from the set in play every record is re-encrypted,
+which is what lets a member added to the feed read the records that did not
+happen to change since they joined, and takes those same records away from a
+member removed. It is written only after every record carries the new set, so
+an interrupted rotation is retried rather than recorded as complete. A
+recipient whose key cannot be rendered as text is refused outright, since its
+removal could not be detected.
+
+A directory served this way is a checkout whose contents a peer controls, so
+a symlink on a managed path (a kind directory, or a file where a record
+belongs) fails the operation instead of being followed: writing and pruning
+stay under the directory itself.
+
 `interchange.Tier` names which kinds a set may carry, enforced at write time
 so a misrouted record fails rather than leaking: the public tier takes
 opt-outs, routes and clean `certificate/v1` records, the members tier takes

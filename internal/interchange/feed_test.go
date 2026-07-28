@@ -1,6 +1,7 @@
 package interchange
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,6 +133,164 @@ func TestWriteFeedLeavesForeignFilesAlone(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "README.md")); err != nil {
 		t.Fatalf("the feed repository's own files must survive an export: %v", err)
+	}
+}
+
+func TestWriteFeedRefusesUnknownTier(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteFeed(dir, TierPublic, []Statement{optOut(t, "https://github.com/acme/lib")}, FeedKeys{}); err != nil {
+		t.Fatal(err)
+	}
+	// The dangerous shape: no records to check the tier against, so nothing
+	// refuses the tier itself and the prune runs over a populated feed.
+	if err := WriteFeed(dir, Tier("mirror"), nil, FeedKeys{}); err == nil {
+		t.Fatal("an unknown tier must be refused")
+	}
+	if names, _ := recordFiles(dir); len(names) != 1 {
+		t.Fatalf("a refused tier must not prune the feed, got %v", names)
+	}
+}
+
+// Adding a member must give them the records that did not change since they
+// joined, and removing one must take those same records away: the ciphertext
+// is what carries access, so leaving it in place on a membership change is
+// the whole bug.
+func TestWriteFeedReEncryptsOnRecipientChange(t *testing.T) {
+	dir := t.TempDir()
+	first, second := testIdentity(t), testIdentity(t)
+	rec := certificate(t, "bypass")
+	oneMember := FeedKeys{Recipients: []age.Recipient{first.Recipient()}, Identities: []age.Identity{first}}
+	if err := WriteFeed(dir, TierMembers, []Statement{rec}, oneMember); err != nil {
+		t.Fatal(err)
+	}
+	if records, _ := ReadFeed(dir, []age.Identity{second}); records[0].Err == nil {
+		t.Fatal("the second identity must not read the feed before it is a recipient")
+	}
+
+	bothMembers := FeedKeys{Recipients: []age.Recipient{first.Recipient(), second.Recipient()}, Identities: []age.Identity{first}}
+	if err := WriteFeed(dir, TierMembers, []Statement{rec}, bothMembers); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []*age.X25519Identity{first, second} {
+		records, err := ReadFeed(dir, []age.Identity{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != 1 || records[0].Err != nil {
+			t.Fatalf("an added recipient must be able to read the unchanged record: %+v", records)
+		}
+	}
+
+	// Re-exporting the same records to the same set must still be a no-op,
+	// or the rotation check would churn the whole feed on every tick.
+	names, err := recordFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, names[0])
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFeed(dir, TierMembers, []Statement{rec}, bothMembers); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("an unchanged recipient set must not rewrite the feed")
+	}
+
+	if err := WriteFeed(dir, TierMembers, []Statement{rec}, oneMember); err != nil {
+		t.Fatal(err)
+	}
+	records, err := ReadFeed(dir, []age.Identity{second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Err == nil {
+		t.Fatalf("a removed recipient must lose access to the unchanged record: %+v", records)
+	}
+	if records, _ = ReadFeed(dir, []age.Identity{first}); records[0].Err != nil {
+		t.Fatalf("the remaining recipient must still read the feed: %v", records[0].Err)
+	}
+}
+
+type opaqueRecipient struct{}
+
+func (opaqueRecipient) Wrap([]byte) ([]*age.Stanza, error) { return nil, nil }
+
+func TestWriteFeedRefusesUnfingerprintableRecipient(t *testing.T) {
+	id := testIdentity(t)
+	keys := FeedKeys{Recipients: []age.Recipient{opaqueRecipient{}}, Identities: []age.Identity{id}}
+	if err := WriteFeed(t.TempDir(), TierMembers, []Statement{certificate(t, "bypass")}, keys); err == nil {
+		t.Fatal("a recipient that cannot be fingerprinted must be refused, since its removal would go unnoticed")
+	}
+}
+
+func TestRecipientsDigestIsOrderAndDuplicateStable(t *testing.T) {
+	first, second := testIdentity(t).Recipient(), testIdentity(t).Recipient()
+	one, err := recipientsDigest([]age.Recipient{first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := recipientsDigest([]age.Recipient{second, first, second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if one != two {
+		t.Fatalf("the same members must digest identically whatever the order or duplicates: %s != %s", one, two)
+	}
+	if three, _ := recipientsDigest([]age.Recipient{first}); three == one {
+		t.Fatal("a different member set must digest differently")
+	}
+}
+
+func TestWriteFeedRefusesSymlinkedKindDirectory(t *testing.T) {
+	dir, outside := t.TempDir(), t.TempDir()
+	victim := filepath.Join(outside, strings.Repeat("33", 32)+".json")
+	if err := os.WriteFile(victim, []byte("not ours\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "optout")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFeed(dir, TierPublic, []Statement{optOut(t, "https://github.com/acme/lib")}, FeedKeys{}); err == nil {
+		t.Fatal("a symlinked kind directory must be refused")
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("pruning must never follow a symlink out of the feed: %v", err)
+	}
+}
+
+func TestWriteFeedRefusesSymlinkedRecordFile(t *testing.T) {
+	dir, outside := t.TempDir(), t.TempDir()
+	victim := filepath.Join(outside, "secrets")
+	if err := os.WriteFile(victim, []byte("not ours\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := optOut(t, "https://github.com/acme/lib")
+	name, err := RecordFile(rec, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(name)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, filepath.Join(dir, name)); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFeed(dir, TierPublic, []Statement{rec}, FeedKeys{}); err == nil {
+		t.Fatal("a symlink where a record belongs must be refused")
+	}
+	body, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "not ours\n" {
+		t.Fatalf("writing must never follow a symlink out of the feed, got %q", body)
 	}
 }
 

@@ -2,6 +2,8 @@ package interchange
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,8 +28,12 @@ import (
 const (
 	recordExt          = ".json"
 	encryptedRecordExt = ".json.age"
-	feedDirPerm        = 0o755
-	recordPerm         = 0o644
+	// recipientsFile holds the digest of the recipient set the encrypted
+	// records were last written for. Nothing in an age file names its own
+	// recipients, so the set has to be recorded next to them.
+	recipientsFile = ".recipients"
+	feedDirPerm    = 0o755
+	recordPerm     = 0o644
 )
 
 // RecordFile returns the feed-relative path for a record: its kind
@@ -72,6 +78,13 @@ type FeedKeys struct {
 // whole two-tier split exists to prevent. The public tier is a plain git
 // repository by definition, so it ignores keys entirely.
 func WriteFeed(dir string, tier Tier, recs []Statement, keys FeedKeys) error {
+	// Checked before anything is inspected or removed: an unrecognised tier
+	// carries no kind at all, so an empty record set would otherwise be read
+	// as "this feed is now empty" and prune every managed record, in the
+	// clear, on a tier nobody vetted.
+	if tier != TierPublic && tier != TierMembers {
+		return fmt.Errorf("feed %s: unknown tier", tier)
+	}
 	encrypted := tier == TierMembers
 	if encrypted && len(keys.Recipients) == 0 {
 		return fmt.Errorf("feed %s: age recipients required to publish encrypted records", tier)
@@ -82,6 +95,13 @@ func WriteFeed(dir string, tier Tier, recs []Statement, keys FeedKeys) error {
 	// rewrite forever. Silently churning is worse than not publishing.
 	if encrypted && len(keys.Identities) == 0 {
 		return fmt.Errorf("feed %s: an age identity is required to read back what was published", tier)
+	}
+	rotate, digest := false, ""
+	if encrypted {
+		var err error
+		if digest, rotate, err = recipientsRotation(dir, keys.Recipients); err != nil {
+			return fmt.Errorf("feed %s: %w", tier, err)
+		}
 	}
 	wanted := make(map[string][]byte, len(recs))
 	for _, rec := range recs {
@@ -114,20 +134,71 @@ func WriteFeed(dir string, tier Tier, recs []Statement, keys FeedKeys) error {
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(wanted)) {
-		if err := writeRecord(filepath.Join(dir, name), wanted[name], encrypted, keys); err != nil {
+		if err := writeRecord(filepath.Join(dir, name), wanted[name], encrypted, rotate, keys); err != nil {
 			return fmt.Errorf("feed %s: write %s: %w", tier, name, err)
 		}
 	}
+	// Recorded only once every record carries the new set: a run that dies
+	// halfway leaves the old digest behind and the next one finishes the
+	// rotation, where recording it first would strand records nobody
+	// re-encrypts.
+	if rotate {
+		if err := writeFile(filepath.Join(dir, recipientsFile), []byte(digest+"\n")); err != nil {
+			return fmt.Errorf("feed %s: record recipient set: %w", tier, err)
+		}
+	}
 	return nil
+}
+
+// recipientsRotation returns the digest of the recipient set in play and
+// whether it differs from the one dir was last written for. An unchanged
+// record keeps its existing ciphertext, so without this a member added to
+// the feed could read only the records that happened to change since, and a
+// member removed would keep reading every record that did not.
+func recipientsRotation(dir string, recipients []age.Recipient) (string, bool, error) {
+	digest, err := recipientsDigest(recipients)
+	if err != nil {
+		return "", false, err
+	}
+	prev, err := readRegular(filepath.Join(dir, recipientsFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return digest, true, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return digest, string(bytes.TrimSpace(prev)) != digest, nil
+}
+
+// recipientsDigest fingerprints a recipient set: trimmed, lowercased,
+// sorted and deduplicated, so the same members always produce the same
+// digest whatever order or spelling they were configured in.
+func recipientsDigest(recipients []age.Recipient) (string, error) {
+	keys := make([]string, 0, len(recipients))
+	for _, r := range recipients {
+		s, ok := r.(fmt.Stringer)
+		if !ok {
+			return "", fmt.Errorf("recipient of type %T cannot be fingerprinted, so a membership change would go unnoticed", r)
+		}
+		keys = append(keys, strings.ToLower(strings.TrimSpace(s.String())))
+	}
+	slices.Sort(keys)
+	h := sha256.Sum256([]byte(strings.Join(slices.Compact(keys), "\n")))
+	return hex.EncodeToString(h[:]), nil
 }
 
 // writeRecord writes one record file, leaving it untouched when it already
 // holds this exact record. On an encrypted tier that check has to compare
 // plaintexts: age derives a fresh file key per call, so identical records
 // never encrypt to identical bytes and a straight byte comparison would
-// rewrite everything every time.
-func writeRecord(path string, raw []byte, encrypted bool, keys FeedKeys) error {
-	existing, readErr := os.ReadFile(path)
+// rewrite everything every time. rotate suppresses the check outright: the
+// plaintext still matches after a membership change, and that is exactly
+// when the ciphertext has to be replaced.
+func writeRecord(path string, raw []byte, encrypted, rotate bool, keys FeedKeys) error {
+	existing, readErr := readRegular(path)
+	if readErr != nil && !errors.Is(readErr, fs.ErrNotExist) {
+		return readErr
+	}
 	if !encrypted {
 		body := slices.Concat(raw, []byte("\n"))
 		if readErr == nil && bytes.Equal(existing, body) {
@@ -135,7 +206,7 @@ func writeRecord(path string, raw []byte, encrypted bool, keys FeedKeys) error {
 		}
 		return writeFile(path, body)
 	}
-	if readErr == nil {
+	if readErr == nil && !rotate {
 		if plain, err := decryptRecord(existing, keys.Identities); err == nil && bytes.Equal(plain, raw) {
 			return nil
 		}
@@ -145,6 +216,21 @@ func writeRecord(path string, raw []byte, encrypted bool, keys FeedKeys) error {
 		return fmt.Errorf("encrypt: %w", err)
 	}
 	return writeFile(path, body)
+}
+
+// readRegular reads path only when it is a regular file. A feed is a
+// checkout a peer controls the contents of, so a symlink sitting where a
+// record belongs must fail the operation rather than redirect the read, or
+// the os.WriteFile that follows it, outside the feed.
+func readRegular(path string) ([]byte, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	return os.ReadFile(path)
 }
 
 func writeFile(path string, body []byte) error {
@@ -190,7 +276,7 @@ func ReadFeed(dir string, identities []age.Identity) ([]FeedRecord, error) {
 }
 
 func readRecord(path string, identities []age.Identity) (Statement, []byte, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := readRegular(path)
 	if err != nil {
 		return Statement{}, nil, err
 	}
@@ -215,19 +301,29 @@ func readRecord(path string, identities []age.Identity) (Statement, []byte, erro
 // recordFiles lists the feed-relative record files under dir, sorted. Only
 // the known kind directories are walked, so a feed repository's README,
 // LICENSE and .git stay untouched by both the writer's pruning and the
-// reader.
+// reader. A symlink anywhere on a managed path is refused rather than
+// followed: WriteFeed removes whatever this returns, so a symlinked kind
+// directory would have it delete files outside the feed entirely.
 func recordFiles(dir string) ([]string, error) {
 	var out []string
 	for _, kind := range sortedKinds() {
-		entries, err := os.ReadDir(filepath.Join(dir, kind))
+		kindDir := filepath.Join(dir, kind)
+		fi, err := os.Lstat(kindDir)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
+		if !fi.IsDir() {
+			return nil, fmt.Errorf("feed path %s is not a directory", kindDir)
+		}
+		entries, err := os.ReadDir(kindDir)
+		if err != nil {
+			return nil, err
+		}
 		for _, e := range entries {
-			if e.IsDir() {
+			if !e.Type().IsRegular() {
 				continue
 			}
 			if name := e.Name(); strings.HasSuffix(name, recordExt) || strings.HasSuffix(name, encryptedRecordExt) {
