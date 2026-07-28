@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -124,7 +125,7 @@ type Worker struct {
 	SchemaStrict bool
 
 	mu      sync.Mutex
-	running map[uint]context.CancelFunc
+	running map[uint]*runningScan
 
 	// cacheMu serialises clone/fetch on the per-URL repo and dependent
 	// caches. One Mutex per URL keeps two scans from racing inside the
@@ -301,17 +302,47 @@ func (w *Worker) maxRateLimitAutoResumeDelay() time.Duration {
 	return defaultMaxRateLimitAutoResumeAge
 }
 
-// Cancel aborts an in-flight scan. Returns true if a running job was found and
-// signalled; false means the scan is queued (or already finished) and the
-// caller should flip the DB row itself so the queue handler drops it.
-func (w *Worker) Cancel(scanID uint) bool {
+// CancelledByUser is the default reason recorded on a cancelled scan, and the
+// one an operator's Cancel button carries. Exported so the web layer records
+// the same text on a queued row it flips itself.
+const CancelledByUser = "cancelled by user"
+
+// runningScan tracks one in-flight scan: the func that aborts it, plus the
+// reason the abort should be recorded under. Without the reason, every
+// cancellation reads "cancelled by user" whatever asked for it, so a scan
+// stopped by a maintainer's opt-out would be misattributed to the operator.
+type runningScan struct {
+	cancel context.CancelFunc
+	reason string
+}
+
+// Cancel aborts an in-flight scan and records reason as the row's error when it
+// unwinds; an empty reason falls back to CancelledByUser. Returns true if a
+// running job was found and signalled; false means the scan is queued (or
+// already finished) and the caller should flip the DB row itself so the queue
+// handler drops it.
+func (w *Worker) Cancel(scanID uint, reason string) bool {
 	w.mu.Lock()
-	cancel, ok := w.running[scanID]
+	rs, ok := w.running[scanID]
+	if ok {
+		rs.reason = reason
+	}
 	w.mu.Unlock()
 	if ok {
-		cancel()
+		rs.cancel()
 	}
 	return ok
+}
+
+// cancelReason is the reason the in-flight scan was cancelled under, empty when
+// nothing asked for a specific one (a shutdown, or a job that is not running).
+func (w *Worker) cancelReason(scanID uint) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if rs, ok := w.running[scanID]; ok {
+		return rs.reason
+	}
+	return ""
 }
 
 func (w *Worker) publish(scanID, repoID uint, name, data string) {
@@ -593,9 +624,9 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 		defer cancel()
 		w.mu.Lock()
 		if w.running == nil {
-			w.running = make(map[uint]context.CancelFunc)
+			w.running = make(map[uint]*runningScan)
 		}
-		w.running[scan.ID] = cancel
+		w.running[scan.ID] = &runningScan{cancel: cancel}
 		w.mu.Unlock()
 		defer func() {
 			w.mu.Lock()
@@ -673,7 +704,9 @@ func (w *Worker) startScan(scan *db.Scan) error {
 // the status. It returns an error only when the terminal save fails, which
 // wrap propagates to goqite.
 func (w *Worker) finalizeScan(ctx context.Context, scan *db.Scan, report string, err error, timeout time.Duration, emit func(Event), snapshotLog func()) error {
-	finishScan(ctx, scan, report, err, timeout, emit)
+	// Read before wrap's deferred cleanup drops the entry, so a cancellation
+	// that named a reason keeps it instead of falling back to the operator's.
+	finishScan(ctx, scan, report, err, timeout, w.cancelReason(scan.ID), emit)
 	snapshotLog()
 	if scan.Status == db.ScanDone && !scan.MaxTurnsHit {
 		w.clearSessionStore(scan)
@@ -769,7 +802,7 @@ func (w *Worker) maybeFireScanFailed(scan *db.Scan) {
 	}
 }
 
-func finishScan(ctx context.Context, scan *db.Scan, report string, err error, timeout time.Duration, emit func(Event)) {
+func finishScan(ctx context.Context, scan *db.Scan, report string, err error, timeout time.Duration, cancelReason string, emit func(Event)) {
 	scan.FinishedAt = new(time.Now())
 	scan.MaxTurnsHit = false
 	switch {
@@ -779,7 +812,7 @@ func finishScan(ctx context.Context, scan *db.Scan, report string, err error, ti
 		emit(Event{Kind: KindError, Text: scan.Error})
 	case errors.Is(ctx.Err(), context.Canceled):
 		scan.Status = db.ScanCancelled
-		scan.Error = "cancelled by user"
+		scan.Error = cmp.Or(cancelReason, CancelledByUser)
 		emit(Event{Kind: KindError, Text: scan.Error})
 	case err != nil:
 		finishErroredScan(scan, report, err, emit)

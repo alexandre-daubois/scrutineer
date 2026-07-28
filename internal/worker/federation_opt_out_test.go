@@ -77,6 +77,40 @@ func TestWrap_cancelsJobForOptedOutRepository(t *testing.T) {
 	}
 }
 
+// A scan the worker is actually running unwinds through finishScan, which used
+// to hardcode the operator's message: an opt-out cancellation then read as
+// "cancelled by user" and the maintainer's request left no trace on the row.
+func TestCancel_carriesTheReasonOntoARunningScan(t *testing.T) {
+	w, scan := newOptOutWorker(t, false)
+	runner := blockingRunner{started: make(chan struct{})}
+	w.Runner = runner
+	body, _ := json.Marshal(queue.Payload{ScanID: scan.ID})
+	done := make(chan error, 1)
+	go func() { done <- w.wrap(w.doSkill)(context.Background(), body) }()
+
+	<-runner.started
+	if !w.Cancel(scan.ID, OptOutCancelReason) {
+		t.Fatal("Cancel reported the scan not running")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("wrap: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("job did not stop after cancel")
+	}
+
+	var got db.Scan
+	w.DB.First(&got, scan.ID)
+	if got.Status != db.ScanCancelled {
+		t.Errorf("status = %s, want cancelled", got.Status)
+	}
+	if got.Error != OptOutCancelReason {
+		t.Errorf("error = %q, want %q", got.Error, OptOutCancelReason)
+	}
+}
+
 func TestWrap_dispatchesWhenNotOptedOut(t *testing.T) {
 	w, scan := newOptOutWorker(t, false)
 	w.Runner = fakeRunner{skillRes: SkillResult{Report: `{"ok":true}`}}

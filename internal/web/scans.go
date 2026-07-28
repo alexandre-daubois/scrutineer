@@ -572,7 +572,7 @@ func (s *Server) scanCancel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "scan is paused", http.StatusBadRequest)
 		return
 	}
-	if s.cancelScan(&scan, cancelledByUser) {
+	if s.cancelScan(&scan, worker.CancelledByUser) {
 		// A queued scan isn't in flight, so the worker never publishes a
 		// scan-status event for it; push one ourselves so the repo Scans tab
 		// and the scan page reflect the cancellation live.
@@ -614,19 +614,15 @@ func sameOriginReferer(r *http.Request) string {
 	return ref
 }
 
-// cancelledByUser is the error text on a scan an operator cancelled by hand,
-// matching what the worker writes when it unwinds a running one.
-const cancelledByUser = "cancelled by user"
-
 // cancelScan aborts one non-terminal scan, recording reason as the row's
-// error. A running scan is signalled through the worker, which flips its row
-// and publishes scan-status as it unwinds (with its own cancellation message,
-// since it is the one that observes the abort); a queued scan isn't in flight,
-// so we flip the row here (the queue handler drops a cancelled row on pickup)
-// and return true so the caller can publish a scan-status event itself.
-// Returns false when there was nothing to do.
+// error whichever path stops it. A running scan is signalled through the
+// worker, which carries the reason through to the row it writes and publishes
+// scan-status as it unwinds; a queued scan isn't in flight, so we flip the row
+// here (the queue handler drops a cancelled row on pickup) and return true so
+// the caller can publish a scan-status event itself. Returns false when there
+// was nothing to do.
 func (s *Server) cancelScan(scan *db.Scan, reason string) (flippedQueued bool) {
-	if s.Worker.Cancel(scan.ID) {
+	if s.Worker.Cancel(scan.ID, reason) {
 		return false
 	}
 	now := time.Now()
@@ -655,7 +651,7 @@ func (s *Server) scansCancelAll(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	queued := s.DB.Model(&db.Scan{}).
 		Where("repository_id = ? AND status = ?", repoID, db.ScanQueued).
-		Updates(scanStatusUpdates(db.ScanCancelled, cancelledByUser, &now, nil))
+		Updates(scanStatusUpdates(db.ScanCancelled, worker.CancelledByUser, &now, nil))
 	if queued.Error != nil {
 		http.Error(w, queued.Error.Error(), http.StatusInternalServerError)
 		return
@@ -668,7 +664,7 @@ func (s *Server) scansCancelAll(w http.ResponseWriter, r *http.Request) {
 	}
 	cancelled := int(queued.RowsAffected)
 	for i := range scans {
-		s.cancelScan(&scans[i], cancelledByUser)
+		s.cancelScan(&scans[i], worker.CancelledByUser)
 		cancelled++
 	}
 	setFlash(w, Flash{Category: successKey, Title: fmt.Sprintf("%d scan(s) cancelled", cancelled)})
