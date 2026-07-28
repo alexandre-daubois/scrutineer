@@ -347,7 +347,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: 'The repository maintainer opted out of federated scanning, so no scan may be enqueued for it.'
+          description: 'Refused by federation policy: the repository maintainer opted out of federated scanning, or a federation peer already holds this finding and an outreach skill (report-upstream, public-issue) may not run until the operator has coordinated.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -692,7 +692,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: 'The repository maintainer opted out of federated scanning, so no scan may be enqueued for it.'
+          description: 'Refused by federation policy: the repository maintainer opted out of federated scanning, or a federation peer already holds this finding and an outreach skill (report-upstream, public-issue) may not run until the operator has coordinated.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

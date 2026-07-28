@@ -209,7 +209,7 @@ Each finding from the `security-deep-dive` skill starts at **new** and moves thr
 1. **new** -- just identified. High/Critical from `security-deep-dive` and every imported finding auto-enqueue a `revalidate` pass first, which records `true_positive` / `false_positive` / `already_fixed` / `uncertain` on the finding and (when true_positive on High/Critical) chains into `verify`. Outside that path: click "Verify" to trigger independent confirmation, "Skip to triage" if you trust the audit, or "Reject"
 2. **enriched** -- verification ran. Review and click "Triage"
 3. **triaged** -- confirmed real. Click "Prepare disclosure"
-4. **ready** -- draft prepared. Run the `report-upstream` skill to file it via GitHub PVR (github.com only, requires `gh` auth), run `public-issue` for reviewed low-severity hardening findings that are safe to file publicly, or click "Mark as reported" after sending it yourself. When upstream has no PVR, follow the runbook in [docs/disclosure-fallback.md](docs/disclosure-fallback.md): route to a CNA when `cna-match` names one, otherwise contact the channel `maintainers` returned
+4. **ready** -- draft prepared. Run the `report-upstream` skill to file it via GitHub PVR (github.com only, requires `gh` auth), run `public-issue` for reviewed low-severity hardening findings that are safe to file publicly, or click "Mark as reported" after sending it yourself. When upstream has no PVR, follow the runbook in [docs/disclosure-fallback.md](docs/disclosure-fallback.md): route to a CNA when `cna-match` names one, otherwise contact the channel `maintainers` returned. With federation peers configured, marking it reported first asks each peer whether they already hold the same finding and, on a match, names their contact so you coordinate before confirming (see [docs/interchange.md](docs/interchange.md))
 5. **reported** -- sent to maintainer. Click "Acknowledged" when they respond
 6. **acknowledged** -- maintainer working on fix. Click "Mark fixed" when it ships
 7. **fixed** -- patch available. Click "Mark published" to issue the advisory
@@ -217,7 +217,7 @@ Each finding from the `security-deep-dive` skill starts at **new** and moves thr
 
 Each finding page has a notes section for recording triage reasoning and communication history.
 
-The repository page carries a Federation opt-out control: recording one refuses every new scan on that repository, including scheduled runs and automatic follow-ups.
+The repository page carries a Federation opt-out control: recording one refuses every new scan on that repository, withdraws it from the interchange feeds, and publishes the request so other federated instances honour it too. An opt-out arriving on a peer feed sets it here the same way. See [docs/interchange.md](docs/interchange.md).
 
 The Chat tab on a repository or a finding opens a read-only conversation with the agent about that code: it works from a copy of the clone plus a snapshot of the findings, and is restricted to reading and searching, so it can explain and cross-check but never modify anything. Each conversation keeps its own working copy on disk, so delete the ones you are done with from the conversation page to reclaim the space.
 
@@ -401,7 +401,7 @@ See [SECURITY.md](SECURITY.md) for the reporting policy and [threatmodel.md](thr
 - [docs/backup.md](docs/backup.md) -- backing up and restoring the database (built-in `scrutineer backup`/`restore`, `sqlite3`, Litestream)
 - [docs/development.md](docs/development.md) -- project layout, regenerating embedded data, running tests
 - [docs/encrypted-sharing.md](docs/encrypted-sharing.md) -- encrypted findings sharing between contributors (age + SSH keys, team keyring management)
-- [docs/interchange.md](docs/interchange.md) -- federation interchange format: in-toto record envelope, salted finding hashes, the claim-check endpoint
+- [docs/interchange.md](docs/interchange.md) -- federation interchange format: in-toto record envelope, salted finding hashes, the claim-check endpoint, the public and members-only feeds with their export/import jobs (threat surface: T14 in [threatmodel.md](threatmodel.md))
 - [docs/codex.md](docs/codex.md) -- the codex backend: what differs from claude, sandbox interaction, adding another harness
 - [docs/opencode.md](docs/opencode.md) -- the opencode backend: provider-agnostic credentials and egress
 - [docs/podman.md](docs/podman.md) -- security model and known gaps for the podman / rootless runtime (sandbox isolation, hardened-mode verification)

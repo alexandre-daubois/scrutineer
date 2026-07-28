@@ -119,6 +119,9 @@ type flags struct {
 	autoRejectMissedCount int
 	federationSalt        string
 	federationContact     string
+	federationPublicFeed  string
+	federationMembersFeed string
+	federationImportFeeds []string
 	skillLocal            skillDirs
 
 	// set records which flags were passed on the command line so merge
@@ -128,12 +131,50 @@ type flags struct {
 
 // validateFederation refuses a federation salt without a contact:
 // claim-check would confirm matches while giving peers no way to
-// coordinate, which is the endpoint's whole purpose.
-func validateFederation(salt, contact string) error {
-	if salt != "" && contact == "" {
+// coordinate, which is the endpoint's whole purpose. It also refuses the
+// configurations that would leak or misfire: a members feed without age
+// recipients would push non-clean certificates in the clear, one without an
+// identity could not read back what it published and so would re-encrypt
+// the whole feed on every tick, and outbound claim-check without the shared
+// salt would send peers hashes that can never match theirs.
+func validateFederation(f *flags) error {
+	if f.federationSalt != "" && f.federationContact == "" {
 		return errors.New("federation: federation_contact is required when federation_salt is set")
 	}
+	if f.federationMembersFeed != "" && (f.recipientsFile == "" || f.identityFile == "") {
+		return errors.New("federation: recipients_file and identity_file are both required when federation_members_feed is set")
+	}
+	if f.federationPublicFeed != "" && f.federationPublicFeed == f.federationMembersFeed {
+		return errors.New("federation: the public and members feeds must not share a git remote; each tier prunes the records the other publishes")
+	}
+	for _, remote := range append([]string{f.federationPublicFeed, f.federationMembersFeed}, f.federationImportFeeds...) {
+		if remote == "" {
+			continue
+		}
+		if err := web.ValidateFeedRemote(remote); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// mergeFederation layers the federation block of the config file under the
+// flags, same precedence as merge itself. federation_salt has no flag so
+// config always applies, and the two remote lists are config-file only.
+func (f *flags) mergeFederation(cfg *config.Config) {
+	if cfg.FederationSalt != "" {
+		f.federationSalt = cfg.FederationSalt
+	}
+	if cfg.FederationContact != "" && !f.set["federation-contact"] {
+		f.federationContact = cfg.FederationContact
+	}
+	if cfg.FederationPublicFeed != "" && !f.set["federation-public-feed"] {
+		f.federationPublicFeed = cfg.FederationPublicFeed
+	}
+	if cfg.FederationMembersFeed != "" && !f.set["federation-members-feed"] {
+		f.federationMembersFeed = cfg.FederationMembersFeed
+	}
+	f.federationImportFeeds = cfg.FederationImportFeeds
 }
 
 func parseFlags() *flags {
@@ -181,6 +222,11 @@ func registerFlags(fs *flag.FlagSet, f *flags) {
 	// federation_salt has no flag on purpose: a secret in argv leaks via
 	// ps and shell history, so it is config-file only.
 	fs.StringVar(&f.federationContact, "federation-contact", "", "contact returned by the claim-check endpoint on a finding-hash match")
+	fs.StringVar(&f.federationPublicFeed, "federation-public-feed", "", "git remote the public interchange feed is pushed to")
+	fs.StringVar(&f.federationMembersFeed, "federation-members-feed", "", "git remote the age-encrypted members interchange feed is pushed to")
+	// federation_import_feeds and federation_peers are lists of remotes
+	// and are config-file only: a repeatable flag for each would duplicate
+	// what the config file already expresses as a YAML sequence.
 	fs.Var(&f.skillLocal, "skills", "additional directory to load SKILL.md files from, overriding bundled skills with the same name (repeatable)")
 }
 
@@ -271,12 +317,7 @@ func (f *flags) merge(cfg *config.Config) {
 	if cfg.AutoRejectMissedCount > 0 && !f.set["auto-reject-missed-count"] {
 		f.autoRejectMissedCount = cfg.AutoRejectMissedCount
 	}
-	if cfg.FederationSalt != "" {
-		f.federationSalt = cfg.FederationSalt
-	}
-	if cfg.FederationContact != "" && !f.set["federation-contact"] {
-		f.federationContact = cfg.FederationContact
-	}
+	f.mergeFederation(cfg)
 
 	// Seed the model pick list from the active harness's own defaults,
 	// so a fresh install of any backend has a working list with correct
@@ -366,7 +407,7 @@ func validateFlags(f *flags) error {
 	if err := config.ValidateSELinux(f.selinux); err != nil {
 		return err
 	}
-	if err := validateFederation(f.federationSalt, f.federationContact); err != nil {
+	if err := validateFederation(f); err != nil {
 		return err
 	}
 	return validateModelBaseURL(f.modelBaseURL)
@@ -560,6 +601,9 @@ func run(log *slog.Logger) error {
 	srv.SetDefaultEffort(f.effort)
 	srv.FederationSalt = f.federationSalt
 	srv.FederationContact = f.federationContact
+	srv.FederationPublicFeed = f.federationPublicFeed
+	srv.FederationMembersFeed = f.federationMembersFeed
+	srv.FederationImportFeeds = f.federationImportFeeds
 
 	if f.recipientsFile != "" {
 		recs, err := loadRecipients(f.recipientsFile)
@@ -584,6 +628,7 @@ func run(log *slog.Logger) error {
 	go q.Start(ctx)
 	go srv.StartScheduler(ctx)
 	go srv.StartRepositoryHealthScorer(ctx)
+	go srv.StartFederation(ctx)
 
 	httpSrv := &http.Server{Addr: f.addr, Handler: srv.Handler(), ReadHeaderTimeout: shutdownTimeout}
 	go func() {
