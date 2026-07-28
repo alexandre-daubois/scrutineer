@@ -40,7 +40,7 @@ The central entity. One row per git URL.
 | ecosystems_dependents_data | text | Cached dependents, chained off the packages lookup (per-package top dependents, capped). |
 | ecosystems_dependents_fetched_at | datetime | When `ecosystems_dependents_data` was last refreshed. TTL 30 days. |
 | disclosure_channel | text | Preferred reporting vector (email, GHSA URL, registry owner handle, SECURITY.md URL). Written by `maintainers`/`cna-match`; analyst-editable. |
-| federation_opt_out_at | datetime | Non-null means the maintainer asked federated instances neither to scan this repository nor to contact them. Blocks every scan enqueue and stops the scheduler before it makes any network call (no upstream mirror push, no remote HEAD lookup). Set from the repo page. |
+| federation_opt_out_at | datetime | Non-null means the maintainer asked federated instances neither to scan this repository nor to contact them. Blocks every scan enqueue, refuses the job at worker dispatch and on the resume paths, and stops the scheduler before it makes any network call (no upstream mirror push, no remote HEAD lookup). Recording it also cancels the repository's queued, running and paused scans. Set from the repo page. |
 | federation_opt_out_reason | text | Optional reason the maintainer gave. |
 | posture | text | Disclosure-readiness tier from the `posture` skill: `ready`, `partial`, `unprepared`. |
 | posture_summary | text | One-line explanation that goes with `posture`. |

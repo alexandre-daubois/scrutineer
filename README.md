@@ -217,7 +217,7 @@ Each finding from the `security-deep-dive` skill starts at **new** and moves thr
 
 Each finding page has a notes section for recording triage reasoning and communication history.
 
-The repository page carries a Federation opt-out control: recording one refuses every new scan on that repository, including scheduled runs and automatic follow-ups.
+The repository page carries a Federation opt-out control: recording one cancels the repository's queued, running and paused scans, then refuses every new scan on it, including scheduled runs and automatic follow-ups.
 
 The Chat tab on a repository or a finding opens a read-only conversation with the agent about that code: it works from a copy of the clone plus a snapshot of the findings, and is restricted to reading and searching, so it can explain and cross-check but never modify anything. Each conversation keeps its own working copy on disk, so delete the ones you are done with from the conversation page to reclaim the space.
 

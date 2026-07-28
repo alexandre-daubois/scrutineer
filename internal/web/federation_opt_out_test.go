@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"scrutineer/internal/db"
+	"scrutineer/internal/worker"
 )
 
 func seedOptOutRepo(t *testing.T, s *Server, optedOut bool) db.Repository {
@@ -125,6 +126,141 @@ func TestRepoFederationOptOut_setEditAndClear(t *testing.T) {
 	cleared := reload()
 	if cleared.FederationOptOutAt != nil || cleared.FederationOptOutReason != "" {
 		t.Fatalf("clearing must drop both columns: %v / %q", cleared.FederationOptOutAt, cleared.FederationOptOutReason)
+	}
+}
+
+func seedScan(t *testing.T, s *Server, repoID uint, status db.ScanStatus) db.Scan {
+	t.Helper()
+	scan := db.Scan{
+		RepositoryID:   repoID,
+		Kind:           "skill",
+		Status:         status,
+		StatusPriority: db.StatusPriorityFor(status),
+	}
+	if err := s.DB.Create(&scan).Error; err != nil {
+		t.Fatal(err)
+	}
+	return scan
+}
+
+func reloadScan(t *testing.T, s *Server, id uint) db.Scan {
+	t.Helper()
+	var got db.Scan
+	if err := s.DB.First(&got, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+func optOutPath(repoID uint) string {
+	return "/repositories/" + strconv.FormatUint(uint64(repoID), 10) + "/federation-opt-out"
+}
+
+// Refusing the next scan is not enough: a queued or paused scan would still
+// run later, and a running one keeps reading the maintainer's code.
+func TestRepoFederationOptOut_stopsScansAlreadyUnderWay(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	repo := seedOptOutRepo(t, s, false)
+	queued := seedScan(t, s, repo.ID, db.ScanQueued)
+	running := seedScan(t, s, repo.ID, db.ScanRunning)
+	paused := seedScan(t, s, repo.ID, db.ScanPaused)
+	// A finished scan is history, not work in flight, and must survive untouched.
+	kept := seedScan(t, s, repo.ID, db.ScanDone)
+
+	if w := postForm(t, s, optOutPath(repo.ID), url.Values{"opt_out": {"1"}}); w.Code >= 400 {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+
+	for name, id := range map[string]uint{"queued": queued.ID, "running": running.ID, "paused": paused.ID} {
+		got := reloadScan(t, s, id)
+		if got.Status != db.ScanCancelled {
+			t.Errorf("%s scan status = %q, want cancelled", name, got.Status)
+		}
+		if got.Error != worker.OptOutCancelReason {
+			t.Errorf("%s scan error = %q, want %q", name, got.Error, worker.OptOutCancelReason)
+		}
+	}
+	if got := reloadScan(t, s, kept.ID); got.Status != db.ScanDone {
+		t.Errorf("a finished scan must not be rewritten, status = %q", got.Status)
+	}
+}
+
+func TestRepoFederationOptOut_clearingLeavesScansAlone(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	repo := seedOptOutRepo(t, s, true)
+	queued := seedScan(t, s, repo.ID, db.ScanQueued)
+
+	if w := postForm(t, s, optOutPath(repo.ID), url.Values{}); w.Code >= 400 {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	if got := reloadScan(t, s, queued.ID); got.Status != db.ScanQueued {
+		t.Errorf("clearing the opt-out must not cancel anything, status = %q", got.Status)
+	}
+}
+
+// Resuming re-queues an existing row without going through the enqueue gate,
+// so it needs its own check; the row stays paused so the operator can see why.
+func TestScanResume_refusedForOptedOutRepository(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	repo := seedOptOutRepo(t, s, true)
+	paused := seedScan(t, s, repo.ID, db.ScanPaused)
+
+	w := postForm(t, s, "/scans/"+strconv.FormatUint(uint64(paused.ID), 10)+"/resume", url.Values{})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status %d, want 409. body=%s", w.Code, w.Body)
+	}
+	if got := reloadScan(t, s, paused.ID); got.Status != db.ScanPaused {
+		t.Errorf("a refused resume must leave the scan paused, status = %q", got.Status)
+	}
+}
+
+// The bulk resume claims every paused row in one statement, so the opt-out has
+// to narrow the claim itself rather than be checked per scan afterwards.
+func TestScansResumePaused_skipsOptedOutRepository(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	optedOut := seedOptOutRepo(t, s, true)
+	open := db.Repository{URL: "https://github.com/acme/other", Name: "other"}
+	if err := s.DB.Create(&open).Error; err != nil {
+		t.Fatal(err)
+	}
+	blocked := seedScan(t, s, optedOut.ID, db.ScanPaused)
+	resumable := seedScan(t, s, open.ID, db.ScanPaused)
+
+	if w := postForm(t, s, "/scans/resume-paused", url.Values{}); w.Code >= 400 {
+		t.Fatalf("status %d: %s", w.Code, w.Body)
+	}
+	if got := reloadScan(t, s, blocked.ID); got.Status != db.ScanPaused {
+		t.Errorf("opted-out scan status = %q, want left paused", got.Status)
+	}
+	if got := reloadScan(t, s, resumable.ID); got.Status != db.ScanQueued {
+		t.Errorf("scan on an open repository status = %q, want queued", got.Status)
+	}
+}
+
+// The tick loads every due repository up front and then fires them one at a
+// time, so a repository still waiting its turn must be re-read rather than
+// trusted from the snapshot.
+func TestRunScheduledScan_rereadsOptOutRecordedAfterTheSnapshot(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	repo := seedOptOutRepo(t, s, true)
+
+	// The snapshot predates the opt-out: no FederationOptOutAt on the struct.
+	s.runScheduledScan(context.Background(), db.Repository{
+		ID: repo.ID, Name: repo.Name, URL: repo.URL,
+		UpstreamURL: "https://127.0.0.1:1/never/reached.git",
+	})
+
+	var skip db.Scan
+	if err := s.DB.Where("repository_id = ?", repo.ID).Order("id desc").First(&skip).Error; err != nil {
+		t.Fatal(err)
+	}
+	if skip.Error != "maintainer opted out of federated scanning" {
+		t.Errorf("skip reason = %q; a stale snapshot must not let the sync through", skip.Error)
 	}
 }
 

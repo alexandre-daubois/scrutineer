@@ -73,7 +73,7 @@ func (s *Server) StartScheduler(ctx context.Context) {
 func (s *Server) scheduleTick(ctx context.Context, now time.Time) {
 	global, _ := db.GetSetting(s.DB, db.SettingScanSchedule)
 	var repos []db.Repository
-	if err := s.DB.Select("id, url, name, scan_schedule, upstream_url, next_scheduled_scan_at, federation_opt_out_at").
+	if err := s.DB.Select("id, url, name, scan_schedule, upstream_url, next_scheduled_scan_at").
 		Where("next_scheduled_scan_at IS NULL OR next_scheduled_scan_at <= ?", now).
 		Find(&repos).Error; err != nil {
 		s.Log.Error("scheduler: list repositories", "err", err)
@@ -119,8 +119,17 @@ func (s *Server) runScheduledScan(ctx context.Context, repo db.Repository) {
 	// Checked before any network call: enqueueSkillWith would refuse an
 	// opted-out repository anyway, but only after the upstream mirror push
 	// and the remote HEAD lookup have already contacted their host, which is
-	// the other half of what the opt-out asks us not to do.
-	if repo.FederationOptedOut() {
+	// the other half of what the opt-out asks us not to do. Read live rather
+	// than off the tick's snapshot: the tick loads every due repository up
+	// front and then fires them one at a time, each doing its own network I/O,
+	// so an opt-out recorded mid-tick has to be seen by the repositories still
+	// waiting their turn.
+	optedOut, err := s.repoFederationOptedOut(repo.ID)
+	if err != nil {
+		s.Log.Error("scheduler: read federation opt-out", "repo", repo.Name, "err", err)
+		return
+	}
+	if optedOut {
 		s.recordScheduledSkip(repo, "maintainer opted out of federated scanning")
 		return
 	}

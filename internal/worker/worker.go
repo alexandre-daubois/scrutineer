@@ -570,6 +570,10 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 			w.Log.Info("dropping stale job", "scan", scan.ID, "status", scan.Status)
 			return nil
 		}
+		if scan.Repository.FederationOptedOut() {
+			w.cancelOptedOut(&scan)
+			return nil
+		}
 
 		if scan.Kind == JobSkill {
 			deferred, err := w.preflightSkill(ctx, &scan, p.Attempt)
@@ -614,6 +618,32 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 		report, err := h(ctx, &scan, emit)
 		return w.finalizeScan(ctx, &scan, report, err, timeout, emit, snapshotLog)
 	}
+}
+
+// OptOutCancelReason is the error text left on a scan stopped because the
+// repository's maintainer asked federated instances not to scan it. Shared
+// with the web layer so the reason reads the same whether the sweep on the
+// opt-out itself or this gate flipped the row.
+const OptOutCancelReason = "cancelled: maintainer opted out of federated scanning"
+
+// cancelOptedOut drops a job whose repository opted out between enqueue and
+// dispatch. The enqueue gate refuses new scans, but a row already on the
+// queue still reaches the worker, and running it is exactly what the opt-out
+// forbids; the web sweep cannot close that window on its own because a scan
+// can be claimed from the queue while it runs.
+func (w *Worker) cancelOptedOut(scan *db.Scan) {
+	now := time.Now()
+	scan.Status = db.ScanCancelled
+	scan.StatusPriority = db.StatusPriorityFor(db.ScanCancelled)
+	scan.Error = OptOutCancelReason
+	scan.FinishedAt = &now
+	if err := w.DB.Save(scan).Error; err != nil {
+		w.Log.Error("save opted-out scan", "scan", scan.ID, "err", err)
+		return
+	}
+	w.publish(scan.ID, scan.RepositoryID, "scan-status", string(scan.Status))
+	w.Log.Warn("dropping job: maintainer opted out of federated scanning",
+		"scan", scan.ID, "repo", scan.RepositoryID)
 }
 
 // startScan records the running state and its audit event in one transaction

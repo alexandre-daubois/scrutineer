@@ -185,7 +185,7 @@
         Federation opt-out
       </h3>
       {{if .Repo.FederationOptOutAt}}
-        <p class="text-sm mt-2">Requested {{since .Repo.FederationOptOutAt}}. New scans are refused, including scheduled runs.</p>
+        <p class="text-sm mt-2">Requested {{since .Repo.FederationOptOutAt}}. Scans in flight were stopped and new ones are refused, including scheduled runs.</p>
         {{if .Repo.FederationOptOutReason}}
           <p class="text-sm mt-1 whitespace-pre-wrap">{{.Repo.FederationOptOutReason}}</p>
         {{end}}
@@ -206,7 +206,7 @@
             <button class="btn-sm" type="submit">Save</button>
           </div>
         </form>
-        <p class="text-xs text-muted-foreground mt-1">Refuses every new scan on this repository: a manual run, a scheduled one, and any automatic follow-up.</p>
+        <p class="text-xs text-muted-foreground mt-1">Cancels the scans queued, running and paused on this repository, then refuses every new one: a manual run, a scheduled one, and any automatic follow-up.</p>
       </details>
     </div>
 
