@@ -4,6 +4,7 @@ Entries are grouped by release, newest first. Each entry is a summary written fo
 
 ## Unreleased
 
+- A repository whose maintainer asks not to be scanned can now be marked as such, and no scan runs against it again: neither a manual run, nor the scheduler, nor an automatic follow-up. ([#754](https://github.com/alpha-omega-security/scrutineer/pull/754), [@alexandre-daubois](https://github.com/alexandre-daubois))
 - Scans can be scheduled to repeat automatically and are skipped when the code has not changed since the last run. ([#633](https://github.com/alpha-omega-security/scrutineer/pull/633), [@alexandre-daubois](https://github.com/alexandre-daubois))
 - Large repositories can be split into named focus areas that are audited in parallel, each with its own report and coverage record. ([#625](https://github.com/alpha-omega-security/scrutineer/pull/625) [#652](https://github.com/alpha-omega-security/scrutineer/pull/652) [#653](https://github.com/alpha-omega-security/scrutineer/pull/653) [#673](https://github.com/alpha-omega-security/scrutineer/pull/673), [@abhinavgautam01](https://github.com/abhinavgautam01))
 - Added a forensics mode that investigates a suspected account or release compromise and produces a cited evidence timeline without touching the repository. ([#643](https://github.com/alpha-omega-security/scrutineer/pull/643), [@abhinavgautam01](https://github.com/abhinavgautam01))

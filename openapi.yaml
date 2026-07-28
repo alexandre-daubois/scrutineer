@@ -346,6 +346,11 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: 'The repository maintainer opted out of federated scanning, so no scan may be enqueued for it.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /findings/{id}:
     parameters:
@@ -683,6 +688,11 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404':
           description: Finding or skill not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: 'The repository maintainer opted out of federated scanning, so no scan may be enqueued for it.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

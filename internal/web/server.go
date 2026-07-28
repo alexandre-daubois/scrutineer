@@ -43,6 +43,12 @@ var ErrSkillRequiresRemote = errors.New("skill requires a remote repository")
 // instead of a ghost scan failing on the worker.
 var ErrSkillProfileMismatch = errors.New("skill requires a different runner profile")
 
+// ErrRepoFederationOptOut is returned by enqueueSkillWith for a repository
+// whose maintainer asked federated instances not to scan it. The gate sits on
+// the single enqueue choke point rather than on each caller, so it also stops
+// the scheduler, triage fan-out and every button on the repo page.
+var ErrRepoFederationOptOut = errors.New("repository maintainer opted out of federated scanning")
+
 // ErrInvalidRef is returned by enqueueSkillWith when opts.Ref fails the
 // shared ref-charset validation. Mirrors ErrSkillProfileMismatch so the
 // API path rejects a bad ref at the boundary (400) instead of enqueueing
@@ -421,6 +427,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /repositories/{id}/validate-fix", s.validateFix)
 	mux.HandleFunc("POST /repositories/{id}/delete", s.repoDelete)
 	mux.HandleFunc("POST /repositories/{id}/disclosure-channel", s.repoDisclosureChannel)
+	mux.HandleFunc("POST /repositories/{id}/federation-opt-out", s.repoFederationOptOut)
 	mux.HandleFunc("POST /repositories/{id}/schedule", s.repoScheduleUpdate)
 	mux.HandleFunc("POST /repositories/{id}/threat-model", s.repoThreatModelSave)
 	mux.HandleFunc("POST /repositories/{id}/threat-model/run", s.repoThreatModelRun)
@@ -2781,8 +2788,11 @@ func (s *Server) enqueueSkillScoped(ctx context.Context, repoID, skillID uint, f
 // explicit opts.Effort > the runtime default effort.
 func (s *Server) enqueueSkillWith(ctx context.Context, repoID, skillID uint, opts ScanOpts) (uint, error) {
 	var repo db.Repository
-	if err := s.DB.Select("id, url").First(&repo, repoID).Error; err != nil {
+	if err := s.DB.Select("id, url, federation_opt_out_at").First(&repo, repoID).Error; err != nil {
 		return 0, err
+	}
+	if repo.FederationOptedOut() {
+		return 0, ErrRepoFederationOptOut
 	}
 	var sk db.Skill
 	hasSkill := s.DB.Select("name, version, metadata, requires_remote, requires_profile, model").First(&sk, skillID).Error == nil

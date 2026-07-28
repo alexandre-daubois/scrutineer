@@ -181,6 +181,37 @@
 
     <div class="mb-4 max-w-3xl">
       <h3 class="text-sm font-medium flex items-center gap-2">
+        <i data-lucide="hand"></i>
+        Federation opt-out
+      </h3>
+      {{if .Repo.FederationOptOutAt}}
+        <p class="text-sm mt-2">Requested {{since .Repo.FederationOptOutAt}}. New scans are refused, including scheduled runs.</p>
+        {{if .Repo.FederationOptOutReason}}
+          <p class="text-sm mt-1 whitespace-pre-wrap">{{.Repo.FederationOptOutReason}}</p>
+        {{end}}
+      {{else}}
+        <p class="text-sm mt-2 italic text-muted-foreground">not requested</p>
+      {{end}}
+      <details class="mt-2">
+        <summary class="text-xs text-muted-foreground cursor-pointer hover:underline">Edit</summary>
+        <form method="post" action="/repositories/{{.Repo.ID}}/federation-opt-out" class="form mt-2">
+          <label class="text-xs flex items-center gap-2">
+            <input type="checkbox" name="opt_out" value="1" {{if .Repo.FederationOptOutAt}}checked{{end}}>
+            The maintainer asked not to be scanned or contacted
+          </label>
+          <div class="grid grid-cols-[1fr_auto] gap-2 mt-2">
+            <input class="input text-xs" type="text" name="reason"
+                   value="{{.Repo.FederationOptOutReason}}"
+                   placeholder="reason (optional)">
+            <button class="btn-sm" type="submit">Save</button>
+          </div>
+        </form>
+        <p class="text-xs text-muted-foreground mt-1">Refuses every new scan on this repository: a manual run, a scheduled one, and any automatic follow-up.</p>
+      </details>
+    </div>
+
+    <div class="mb-4 max-w-3xl">
+      <h3 class="text-sm font-medium flex items-center gap-2">
         <i data-lucide="calendar-clock"></i>
         Scheduled scans
       </h3>

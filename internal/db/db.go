@@ -68,6 +68,14 @@ type Repository struct {
 	// it from the repo page.
 	DisclosureChannel string
 
+	// FederationOptOutAt records that this repository's maintainer asked
+	// federated instances neither to scan it nor to contact them about it.
+	// Non-null blocks every scan enqueue and stops the scheduler before it
+	// makes any network call. FederationOptOutReason is the optional reason
+	// the maintainer gave.
+	FederationOptOutAt     *time.Time
+	FederationOptOutReason string
+
 	// Posture is the disclosure-readiness tier assigned by the posture
 	// skill: "ready", "partial", or "unprepared". PostureSummary is the
 	// one-line explanation that goes with it. Both are advisory only and

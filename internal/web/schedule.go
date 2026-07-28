@@ -73,7 +73,7 @@ func (s *Server) StartScheduler(ctx context.Context) {
 func (s *Server) scheduleTick(ctx context.Context, now time.Time) {
 	global, _ := db.GetSetting(s.DB, db.SettingScanSchedule)
 	var repos []db.Repository
-	if err := s.DB.Select("id, url, name, scan_schedule, upstream_url, next_scheduled_scan_at").
+	if err := s.DB.Select("id, url, name, scan_schedule, upstream_url, next_scheduled_scan_at, federation_opt_out_at").
 		Where("next_scheduled_scan_at IS NULL OR next_scheduled_scan_at <= ?", now).
 		Find(&repos).Error; err != nil {
 		s.Log.Error("scheduler: list repositories", "err", err)
@@ -116,6 +116,14 @@ func (s *Server) scheduleTick(ctx context.Context, now time.Time) {
 // diff-rescan group (which falls back to full coverage when no baseline
 // exists, e.g. on a never-scanned repository).
 func (s *Server) runScheduledScan(ctx context.Context, repo db.Repository) {
+	// Checked before any network call: enqueueSkillWith would refuse an
+	// opted-out repository anyway, but only after the upstream mirror push
+	// and the remote HEAD lookup have already contacted their host, which is
+	// the other half of what the opt-out asks us not to do.
+	if repo.FederationOptedOut() {
+		s.recordScheduledSkip(repo, "maintainer opted out of federated scanning")
+		return
+	}
 	var inflight int64
 	if err := s.DB.Model(&db.Scan{}).
 		Where("repository_id = ? AND status IN ?", repo.ID, []db.ScanStatus{db.ScanQueued, db.ScanRunning, db.ScanPaused}).
