@@ -4,6 +4,7 @@ Entries are grouped by release, newest first. Each entry is a summary written fo
 
 ## Unreleased
 
+- Before a finding is reported, federated peers are asked whether they already hold it, so two teams no longer contact the same maintainer separately. This covers both reporting by hand and the skills that file the report for you. ([#755](https://github.com/alpha-omega-security/scrutineer/pull/755), [@alexandre-daubois](https://github.com/alexandre-daubois))
 - Instances can now federate: opt-out requests, validated disclosure routes and clean fix-audit certificates are published to a public feed anyone can follow, the fix audits that came back negative go to an encrypted members-only feed, and both are exchanged with peers automatically. Before a finding is marked reported, peers are asked whether they already hold it, so two teams no longer contact the same maintainer separately. Maintainers who ask to be left alone are honoured across every federated instance. ([#752](https://github.com/alpha-omega-security/scrutineer/pull/752), [@alexandre-daubois](https://github.com/alexandre-daubois))
 
 - Scans can be scheduled to repeat automatically and are skipped when the code has not changed since the last run. ([#633](https://github.com/alpha-omega-security/scrutineer/pull/633), [@alexandre-daubois](https://github.com/alexandre-daubois))

@@ -122,6 +122,7 @@ type flags struct {
 	federationPublicFeed  string
 	federationMembersFeed string
 	federationImportFeeds []string
+	federationPeers       []string
 	skillLocal            skillDirs
 
 	// set records which flags were passed on the command line so merge
@@ -140,6 +141,14 @@ type flags struct {
 func validateFederation(f *flags) error {
 	if f.federationSalt != "" && f.federationContact == "" {
 		return errors.New("federation: federation_contact is required when federation_salt is set")
+	}
+	if len(f.federationPeers) > 0 && f.federationSalt == "" {
+		return errors.New("federation: federation_salt is required when federation_peers is set")
+	}
+	for _, peer := range f.federationPeers {
+		if err := web.ValidatePeerURL(peer); err != nil {
+			return err
+		}
 	}
 	if f.federationMembersFeed != "" && (f.recipientsFile == "" || f.identityFile == "") {
 		return errors.New("federation: recipients_file and identity_file are both required when federation_members_feed is set")
@@ -175,6 +184,7 @@ func (f *flags) mergeFederation(cfg *config.Config) {
 		f.federationMembersFeed = cfg.FederationMembersFeed
 	}
 	f.federationImportFeeds = cfg.FederationImportFeeds
+	f.federationPeers = cfg.FederationPeers
 }
 
 func parseFlags() *flags {
@@ -604,6 +614,7 @@ func run(log *slog.Logger) error {
 	srv.FederationPublicFeed = f.federationPublicFeed
 	srv.FederationMembersFeed = f.federationMembersFeed
 	srv.FederationImportFeeds = f.federationImportFeeds
+	srv.FederationPeers = f.federationPeers
 
 	if f.recipientsFile != "" {
 		recs, err := loadRecipients(f.recipientsFile)

@@ -50,6 +50,18 @@ var ErrSkillProfileMismatch = errors.New("skill requires a different runner prof
 // fan-out and every button on the repo page.
 var ErrRepoFederationOptOut = errors.New("repository maintainer opted out of federated scanning")
 
+// ErrFederationClaimPending is returned by enqueueSkillWith when an
+// outreach skill is asked to run on a finding a federation peer also holds.
+// The check sits at enqueue rather than on the skill's own status write:
+// report-upstream files with the maintainer and only then PATCHes the status,
+// so refusing the write would leave the outreach done and the finding stuck.
+var ErrFederationClaimPending = errors.New("a federation peer already holds this finding; coordinate before reporting")
+
+// outreachSkills contact someone outside this instance about a finding and
+// mark it reported themselves, so they are the automated half of what the
+// outbound claim-check exists to deduplicate.
+var outreachSkills = map[string]bool{reportUpstreamSkillName: true, publicIssueSkillName: true}
+
 // ErrInvalidRef is returned by enqueueSkillWith when opts.Ref fails the
 // shared ref-charset validation. Mirrors ErrSkillProfileMismatch so the
 // API path rejects a bad ref at the boundary (400) instead of enqueueing
@@ -110,11 +122,14 @@ type Server struct {
 
 	// FederationPublicFeed and FederationMembersFeed are the git remotes
 	// the export job pushes each tier to; FederationImportFeeds are the
-	// peer remotes the import job pulls. All three empty leaves the
-	// federation job dormant. See docs/interchange.md.
+	// peer remotes the import job pulls; all three empty leaves the
+	// federation job dormant. FederationPeers are peer base URLs asked over
+	// POST /claim-check before this instance reports a finding. See
+	// docs/interchange.md.
 	FederationPublicFeed  string
 	FederationMembersFeed string
 	FederationImportFeeds []string
+	FederationPeers       []string
 
 	// resolvePURL maps a Package URL to its source repository URL via
 	// packages.ecosyste.ms. Field rather than direct call so tests can
@@ -1387,9 +1402,15 @@ func (s *Server) findingStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid status", http.StatusUnprocessableEntity)
 		return
 	}
+	if status == db.FindingReported && !s.federationClaimGate(w, r, f) {
+		return
+	}
 	if err := db.WriteFindingField(s.DB, f.ID, statusKey, string(status), db.SourceAnalyst, ""); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if status == db.FindingReported {
+		s.clearFederationClaim(f)
 	}
 	s.redirect(w, r, fmt.Sprintf("/findings/%d", f.ID))
 }
@@ -1433,6 +1454,10 @@ const discloseSkillName = "disclose"
 
 // publicIssueSkillName is the skill the File public issue button runs.
 const publicIssueSkillName = "public-issue"
+
+// reportUpstreamSkillName is the skill that files a finding with the
+// maintainer through GitHub's private vulnerability reporting.
+const reportUpstreamSkillName = "report-upstream"
 
 // patchSkillName is the skill the Propose patch button runs.
 const patchSkillName = "patch"
@@ -1483,6 +1508,13 @@ func (s *Server) runFindingSkill(w http.ResponseWriter, r *http.Request, name st
 		}
 	}
 	scanID, err := s.enqueueSkillScoped(r.Context(), scan.RepositoryID, skill.ID, new(f.ID), r.FormValue("model"))
+	if errors.Is(err, ErrFederationClaimPending) {
+		// The claim is now recorded on the finding, so the page shows who to
+		// coordinate with and running the skill again goes through.
+		setFlash(w, Flash{Category: warningKey, Title: "A federation peer already holds this finding"})
+		s.redirect(w, r, fmt.Sprintf("/findings/%d", f.ID))
+		return
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -2809,6 +2841,20 @@ func (s *Server) enqueueSkillWith(ctx context.Context, repoID, skillID uint, opt
 	}
 	if hasSkill && sk.RequiresProfile != "" && opts.Profile != "" && opts.Profile != sk.RequiresProfile {
 		return 0, fmt.Errorf("%w: %q needs %q, got %q", ErrSkillProfileMismatch, sk.Name, sk.RequiresProfile, opts.Profile)
+	}
+	if opts.FindingID != nil && hasSkill && outreachSkills[sk.Name] {
+		var f db.Finding
+		if err := s.DB.Select("id, repository_id, sub_path, location, cwe, federation_claim_contacts").
+			First(&f, *opts.FindingID).Error; err != nil {
+			return 0, err
+		}
+		held, err := s.claimPeerHold(ctx, f)
+		if err != nil {
+			return 0, err
+		}
+		if held {
+			return 0, fmt.Errorf("%w: %q", ErrFederationClaimPending, sk.Name)
+		}
 	}
 	switch opts.RescanMode {
 	case "", db.ScanRescanModeFull:

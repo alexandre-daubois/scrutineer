@@ -143,6 +143,10 @@ func TestValidateFederation(t *testing.T) {
 		{"members feed without recipients", flags{federationMembersFeed: "git@host:o/f.git", identityFile: "~/.ssh/id_ed25519"}, false},
 		{"members feed without identity", flags{federationMembersFeed: "git@host:o/f.git", recipientsFile: "./recipients.txt"}, false},
 		{"public feed needs nothing else", flags{federationPublicFeed: "git@host:o/f.git"}, true},
+		{"peers with salt", flags{federationSalt: "s3cret", federationContact: "s@e.com", federationPeers: []string{"https://peer.example.com"}}, true},
+		{"peers without salt", flags{federationPeers: []string{"https://peer.example.com"}}, false},
+		{"peer with a non-http scheme", flags{federationSalt: "s3cret", federationContact: "s@e.com", federationPeers: []string{"file:///etc/passwd"}}, false},
+		{"credentialed peer", flags{federationSalt: "s3cret", federationContact: "s@e.com", federationPeers: []string{"https://tok@peer.example.com"}}, false},
 		{"credentialed public feed", flags{federationPublicFeed: "https://u:tok@host/o/f.git"}, false},
 		{"credentialed import feed", flags{federationImportFeeds: []string{"https://u:tok@host/o/f.git"}}, false},
 		{"both tiers on one remote", flags{

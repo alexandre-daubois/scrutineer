@@ -13,6 +13,9 @@ import (
 	"scrutineer/internal/worker"
 )
 
+// testFederationSalt is the shared salt the claim-check tests federate under.
+const testFederationSalt = "s3cret"
+
 func postClaimCheck(t *testing.T, s *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	r := httptest.NewRequest("POST", "/claim-check", strings.NewReader(body))
@@ -39,7 +42,7 @@ func seedClaimCheckFinding(t *testing.T, s *Server, status db.FindingLifecycle) 
 func TestClaimCheck_matchReturnsContact(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
-	s.FederationSalt = "s3cret"
+	s.FederationSalt = testFederationSalt
 	s.FederationContact = "security@example.com"
 	hash := seedClaimCheckFinding(t, s, db.FindingTriaged)
 
@@ -62,7 +65,7 @@ func TestClaimCheck_matchReturnsContact(t *testing.T) {
 func TestClaimCheck_noMatch(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
-	s.FederationSalt = "s3cret"
+	s.FederationSalt = testFederationSalt
 	s.FederationContact = "security@example.com"
 	seedClaimCheckFinding(t, s, db.FindingTriaged)
 
@@ -81,7 +84,7 @@ func TestClaimCheck_ignoresRejectedAndDuplicate(t *testing.T) {
 		t.Run(string(status), func(t *testing.T) {
 			s, done := newTestServer(t)
 			defer done()
-			s.FederationSalt = "s3cret"
+			s.FederationSalt = testFederationSalt
 			hash := seedClaimCheckFinding(t, s, status)
 
 			w := postClaimCheck(t, s, `{"hash":"`+hash+`"}`)
@@ -106,7 +109,7 @@ func TestClaimCheck_disabledWithoutSalt(t *testing.T) {
 }
 
 func TestClaimCheck_nonPostIs404(t *testing.T) {
-	for _, salt := range []string{"", "s3cret"} {
+	for _, salt := range []string{"", testFederationSalt} {
 		s, done := newTestServer(t)
 		s.FederationSalt = salt
 
@@ -124,7 +127,7 @@ func TestClaimCheck_nonPostIs404(t *testing.T) {
 func TestClaimCheck_hashSetCachedForTTL(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
-	s.FederationSalt = "s3cret"
+	s.FederationSalt = testFederationSalt
 	s.FederationContact = "security@example.com"
 
 	miss := interchange.FindingHash(s.FederationSalt, "https://example.com/acme/lib", "backend", "src/db.go:42", "CWE-89")
@@ -144,7 +147,7 @@ func TestClaimCheck_hashSetCachedForTTL(t *testing.T) {
 func TestClaimCheck_badRequests(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
-	s.FederationSalt = "s3cret"
+	s.FederationSalt = testFederationSalt
 
 	for name, body := range map[string]string{
 		"invalid json":  `{`,

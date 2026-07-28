@@ -27,6 +27,10 @@
           <p class="text-sm mb-1 font-medium">Remediation handoff ready</p>
           <p class="text-sm text-muted-foreground">Review the patch or mitigation notes, edit if needed, then share with the operator or remediation owner.</p>
         {{end}}
+        {{if .FederationClaimContacts}}
+          <p class="text-sm mt-3 font-medium">A federation peer already holds this finding</p>
+          <p class="text-sm text-muted-foreground">{{.FederationClaimContacts}} answered the claim-check with a match, so two instances are about to report the same issue. Coordinate through that contact first, then confirm to mark it reported anyway.</p>
+        {{end}}
       {{else if eq $s "reported"}}
         {{if .HasDependents}}
           <p class="text-sm mb-1 font-medium">Reported to maintainer</p>
@@ -128,10 +132,17 @@
             <i data-lucide="message-square-plus"></i> File public issue
           </button>
         {{end}}
-        <button type="submit" name="status" value="reported" class="btn"
-                hx-post="/findings/{{$id}}/status">
-          <i data-lucide="send"></i> {{if .HasDependents}}Mark as reported{{else}}Mark shared{{end}}
-        </button>
+        {{if .FederationClaimContacts}}
+          <button type="submit" name="status" value="reported" class="btn"
+                  hx-post="/findings/{{$id}}/status">
+            <i data-lucide="send"></i> Coordinated, {{if .HasDependents}}mark as reported{{else}}mark shared{{end}}
+          </button>
+        {{else}}
+          <button type="submit" name="status" value="reported" class="btn"
+                  hx-post="/findings/{{$id}}/status">
+            <i data-lucide="send"></i> {{if .HasDependents}}Mark as reported{{else}}Mark shared{{end}}
+          </button>
+        {{end}}
 
       {{else if eq $s "reported"}}
         <button type="submit" name="status" value="acknowledged" class="btn"
