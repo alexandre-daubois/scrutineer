@@ -6,6 +6,7 @@ Entries are grouped by release, newest first. Each entry is a summary written fo
 
 - A repository whose maintainer asks not to be scanned can now be marked as such: work already under way stops, and no scan runs against it again, neither a manual run, nor the scheduler, nor an automatic follow-up. ([#753](https://github.com/alpha-omega-security/scrutineer/pull/753), [@alexandre-daubois](https://github.com/alexandre-daubois))
 - Operators running on a restricted network can now turn off the third-party data scrutineer fetches from ecosyste.ms, in a single setting rather than by cutting the network under it, and a scan whose enrichment cannot reach that service now moves on immediately instead of waiting on it once per data source. ([#790](https://github.com/alpha-omega-security/scrutineer/pull/790), [@alexandre-daubois](https://github.com/alexandre-daubois))
+- Instances can now exchange what they know: opt-out requests, validated disclosure routes and clean fix-audit certificates are published to a public feed anyone can follow, the fix audits that came back negative go to an encrypted members-only feed, and peer feeds are pulled in automatically, so a maintainer who asks to be left alone is honoured on every federated instance and a disclosure route another team has already confirmed does not have to be rediscovered. ([#775](https://github.com/alpha-omega-security/scrutineer/pull/775), [@alexandre-daubois](https://github.com/alexandre-daubois))
 
 ## 2026-07-28
 

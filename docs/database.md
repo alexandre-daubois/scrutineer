@@ -39,9 +39,10 @@ The central entity. One row per git URL.
 | ecosystems_issues_fetched_at | datetime | When `ecosystems_issues_data` was last refreshed. TTL 7 days. |
 | ecosystems_dependents_data | text | Cached dependents, chained off the packages lookup (per-package top dependents, capped). |
 | ecosystems_dependents_fetched_at | datetime | When `ecosystems_dependents_data` was last refreshed. TTL 30 days. |
-| disclosure_channel | text | Preferred reporting vector (email, GHSA URL, registry owner handle, SECURITY.md URL). Written by `maintainers`/`cna-match`; analyst-editable. |
-| federation_opt_out_at | datetime | Non-null means the maintainer asked federated instances neither to scan this repository nor to contact them. Blocks every scan enqueue, refuses the job at worker dispatch and on the resume paths, and stops the scheduler before it makes any network call (no upstream mirror push, no remote HEAD lookup). Recording it also cancels the repository's queued, running and paused scans. Set from the repo page. |
-| federation_opt_out_reason | text | Optional reason the maintainer gave. |
+| disclosure_channel | text | Preferred reporting vector (email, GHSA URL, registry owner handle, SECURITY.md URL). Written by `maintainers`/`cna-match`, or by the interchange import job from a peer's `route` record when this instance has none of its own (suffixed with the peer feed so the provenance is visible, the way `cna-match` appends the CNA name); analyst-editable. |
+| disclosure_channel_at | datetime | When `disclosure_channel` last changed, and the `verified_at` of the interchange `route` record. Only moves on a real change, so an unchanged `maintainers` re-run does not republish the record. Null for channels written before this column existed, which keeps them off the feed rather than stamping an invented timestamp. |
+| federation_opt_out_at | datetime | Non-null means the maintainer asked federated instances neither to scan this repository nor to contact them. Blocks every scan enqueue, refuses the job at worker dispatch and on the resume paths, stops the scheduler before it makes any network call (no upstream mirror push, no remote HEAD lookup), withdraws the repository from the `route` and `certificate` feed records, and publishes an `optout` record on the public feed. Recording it also cancels the repository's queued, running and paused scans. Set from the repo page or by an `optout` record imported from a peer feed. |
+| federation_opt_out_reason | text | Optional reason the maintainer gave; it travels with the `optout` record. |
 | posture | text | Disclosure-readiness tier from the `posture` skill: `ready`, `partial`, `unprepared`. |
 | posture_summary | text | One-line explanation that goes with `posture`. |
 | health | text | Evidence-based maintenance classification: `active`, `stale`, `abandoned`, or `zombie`. Empty until metadata or maintainer evidence is available. |
@@ -585,6 +586,20 @@ One turn in a `conversations` row: a user prompt or the assistant's reply.
 | role | text | `user` or `assistant`. |
 | content | text | Rendered message text; for an assistant message, the accumulated streamed response. |
 | created_at | datetime | |
+
+## interchange_records
+
+Federation records imported from peer feeds by the import job, stored verbatim so re-validating or re-applying one never depends on how the running version of scrutineer happened to interpret it. Unique per `(feed, predicate_type, subject_digest)`: a peer refreshing a record replaces its own row, while two peers publishing conflicting verdicts for the same subject each keep theirs instead of one silently winning. Nothing this instance publishes is stored here; the export job derives every outgoing record from `repositories` and `advisory_audits` on each run. See [interchange.md](interchange.md).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | integer PK | |
+| feed | text | The peer feed's git remote, part of the unique key. |
+| predicate_type | text | The record's in-toto `predicateType`, e.g. `.../interchange/optout/v1`. |
+| subject_digest | text | The record's subject sha256: the salted finding hash for a `claim`, sha256 of the canonical repository URL for an `optout` or `route`, sha256 of repository plus advisory id for a `certificate`. |
+| record | text | The raw in-toto statement as published. |
+| applied_at | datetime | When the import last acted on this record, or established there was nothing local to act on. Null re-opens it on the next pass, and a changed `record` clears it, so a peer's correction is re-applied and an `optout` published before its repository was imported here still lands once that repository exists. An unchanged record keeps its stamp, which is what stops the hourly pass reinstating what an operator deliberately cleared. |
+| received_at | datetime | When the import job last read this record. |
 
 ## goqite
 

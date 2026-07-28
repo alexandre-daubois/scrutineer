@@ -858,8 +858,7 @@ func (w *Worker) parseMaintainersOutput(scan *db.Scan, report string, emit func(
 		return err
 	}
 	if strings.TrimSpace(result.DisclosureChannel) != "" {
-		if err := w.DB.Model(&db.Repository{}).Where("id = ?", repo.ID).
-			Update("disclosure_channel", result.DisclosureChannel).Error; err != nil {
+		if err := db.SetDisclosureChannel(w.DB, repo.ID, result.DisclosureChannel); err != nil {
 			return fmt.Errorf("update disclosure channel: %w", err)
 		}
 	}

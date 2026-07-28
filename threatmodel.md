@@ -162,6 +162,16 @@ Under **rootless** podman the host proxy lives across the `--internal` boundary 
 
 Seccomp is left at Docker's default profile intentionally. The default already blocks roughly 40 syscalls including the common escape primitives (`keyctl`, `add_key`, `bpf`, `clone3` with namespaces, `kexec_load`, `unshare` with CLONE_NEWUSER, ptrace against other PIDs); combined with `--cap-drop ALL`, `no-new-privileges`, the read-only rootfs, and the non-root container user, a custom profile would add little for the threats hardened mode is designed against. Tightening to a stricter profile (e.g. drop `mount`, `pivot_root`, `chroot`) is a future option if a specific exploit class becomes a concern.
 
+### T14: Federation egress and feed remotes (opt-in, partially mitigated)
+
+Federation adds a new class of egress from the scrutineer **host process** itself, alongside the git transport it already runs (`git ls-remote` and the scheduler's force-push in `worker/upstream.go`, `git clone`/`fetch` per scan) and its in-process ecosyste.ms HTTP client, and separate from the runner egress T13 governs. When a feed remote is set, an hourly job runs `git clone` / `fetch` / `push` against it. None of it goes through the allowlisting proxy, which exists for the container, not for scrutineer. All of it is off by default and every destination is named by the operator in the config file, so this is a surface the operator opts into host by host rather than one a hostile repository can steer: nothing scanned influences which remote is contacted. See [docs/interchange.md](docs/interchange.md).
+
+What travels is bounded by design. Feed records are schema-closed (`additionalProperties: false`) so no finding body, severity, CVSS or health score can travel, and the tier split keeps the records that name a live unfixed weakness on the age-encrypted members feed. Imported records are validated against the shipped schema before anything is stored, and the only two that mutate local state are opt-outs and routes, neither of which can widen what this instance does: an opt-out only ever stops work, and a route is refused unless the local channel is empty.
+
+Credentials are refused at startup: `ValidateFeedRemote` rejects a token in either the URL or the scp-style spelling, whether it is spelled as a password or, as is common for a PAT, as the username. Without those checks a credentialed remote would reach the logs verbatim through the job's error messages, the same class of leak the repository URL and the schedule's upstream URL are already validated against at input. Feed transport authenticates with the host's ambient git credentials under `GIT_TERMINAL_PROMPT=0`.
+
+Residual: exposing `POST /claim-check` to peers means fronting it with a reverse proxy that sets `Host: 127.0.0.1:8080`, which deliberately steps past the loopback Host check (T3) for that one route; forwarding anything more than that route is the operator's mistake to avoid, and the endpoint answers a plain 404 when no salt is configured so a non-federated instance is indistinguishable from one without it.
+
 ## Minor observations
 
 The ecosyste.ms clients identify as `scrutineer (andrew@ecosyste.ms)`. Worth a config flag before anyone else runs it.

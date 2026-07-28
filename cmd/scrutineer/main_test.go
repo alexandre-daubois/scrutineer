@@ -132,14 +132,34 @@ func TestFlagsMerge_cliFlagWins(t *testing.T) {
 }
 
 func TestValidateFederation(t *testing.T) {
-	if err := validateFederation("s3cret", "security@example.com"); err != nil {
-		t.Errorf("salt with contact must be accepted: %v", err)
-	}
-	if err := validateFederation("", ""); err != nil {
-		t.Errorf("federation disabled must be accepted: %v", err)
-	}
-	if err := validateFederation("s3cret", ""); err == nil {
-		t.Error("salt without contact must be refused")
+	for _, tc := range []struct {
+		name string
+		f    flags
+		want bool
+	}{
+		{"salt with contact", flags{federationSalt: "s3cret", federationContact: "security@example.com"}, true},
+		{"federation disabled", flags{}, true},
+		{"salt without contact", flags{federationSalt: "s3cret"}, false},
+		{"members feed with recipients and identity", flags{federationMembersFeed: "git@host:o/f.git", recipientsFile: "./recipients.txt", identityFile: "~/.ssh/id_ed25519"}, true},
+		{"members feed without recipients", flags{federationMembersFeed: "git@host:o/f.git", identityFile: "~/.ssh/id_ed25519"}, false},
+		{"members feed without identity", flags{federationMembersFeed: "git@host:o/f.git", recipientsFile: "./recipients.txt"}, false},
+		{"public feed needs nothing else", flags{federationPublicFeed: "git@host:o/f.git"}, true},
+		{"credentialed public feed", flags{federationPublicFeed: "https://u:tok@host/o/f.git"}, false},
+		{"credentialed import feed", flags{federationImportFeeds: []string{"https://u:tok@host/o/f.git"}}, false},
+		{"both tiers on one remote", flags{
+			federationPublicFeed: "git@host:o/f.git", federationMembersFeed: "git@host:o/f.git",
+			recipientsFile: "./recipients.txt", identityFile: "~/.ssh/id_ed25519",
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateFederation(&tc.f)
+			if tc.want && err != nil {
+				t.Errorf("must be accepted: %v", err)
+			}
+			if !tc.want && err == nil {
+				t.Error("must be refused")
+			}
+		})
 	}
 }
 

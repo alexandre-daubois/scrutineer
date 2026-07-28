@@ -48,9 +48,10 @@ var ErrSkillRequiresRemote = errors.New("skill requires a remote repository")
 var ErrSkillProfileMismatch = errors.New("skill requires a different runner profile")
 
 // ErrRepoFederationOptOut is returned by enqueueSkillWith for a repository
-// whose maintainer asked federated instances not to scan it. The gate sits on
-// the single enqueue choke point rather than on each caller, so it also stops
-// the scheduler, triage fan-out and every button on the repo page.
+// whose maintainer asked federated instances not to scan it. The gate sits
+// on the single enqueue choke point rather than on each caller, so an
+// opt-out imported from a peer feed also stops the scheduler, triage
+// fan-out and every button on the repo page.
 var ErrRepoFederationOptOut = errors.New("repository maintainer opted out of federated scanning")
 
 // ErrInvalidRef is returned by enqueueSkillWith when opts.Ref fails the
@@ -117,6 +118,13 @@ type Server struct {
 	VINCE           vince.Config
 	vinceHTTPClient *http.Client
 	vinceSubmitMu   sync.Mutex
+	// FederationPublicFeed and FederationMembersFeed are the git remotes
+	// the export job pushes each tier to; FederationImportFeeds are the
+	// peer remotes the import job pulls. All three empty leaves the
+	// federation job dormant. See docs/interchange.md.
+	FederationPublicFeed  string
+	FederationMembersFeed string
+	FederationImportFeeds []string
 
 	// resolvePURL maps a Package URL to its source repository URL via
 	// packages.ecosyste.ms. Field rather than direct call so tests can
@@ -2876,8 +2884,7 @@ func (s *Server) repoDisclosureChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value := strings.TrimSpace(r.FormValue("disclosure_channel"))
-	if err := s.DB.Model(&db.Repository{}).Where("id = ?", repo.ID).
-		Update("disclosure_channel", value).Error; err != nil {
+	if err := db.SetDisclosureChannel(s.DB, repo.ID, value); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
