@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -108,6 +109,71 @@ func TestCancel_carriesTheReasonOntoARunningScan(t *testing.T) {
 	}
 	if got.Error != OptOutCancelReason {
 		t.Errorf("error = %q, want %q", got.Error, OptOutCancelReason)
+	}
+}
+
+// The dispatch gate reads the row and the flag, then startScan claims it, and
+// nothing serialises the opt-out sweep against that pair: it can cancel the
+// queued row in between. Saving the stale row back would write every column and
+// resurrect the scan as running, on exactly the repository whose maintainer just
+// asked us to stop.
+func TestStartScan_doesNotResurrectARowTheOptOutSweepCancelled(t *testing.T) {
+	w, scan := newOptOutWorker(t, false)
+	now := time.Now()
+	if err := w.DB.Model(&db.Scan{}).Where("id = ?", scan.ID).Updates(map[string]any{
+		"status":      db.ScanCancelled,
+		"error":       OptOutCancelReason,
+		"finished_at": &now,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := w.startScan(&scan); !errors.Is(err, errScanClaimLost) {
+		t.Fatalf("startScan = %v, want errScanClaimLost", err)
+	}
+	var got db.Scan
+	w.DB.First(&got, scan.ID)
+	if got.Status != db.ScanCancelled {
+		t.Errorf("status = %q, want the sweep's cancelled to stand", got.Status)
+	}
+	if got.Error != OptOutCancelReason {
+		t.Errorf("error = %q, want %q", got.Error, OptOutCancelReason)
+	}
+	if got.StartedAt != nil {
+		t.Error("a scan that lost its claim must not look started")
+	}
+	var events int64
+	w.DB.Model(&db.AuditEvent{}).Count(&events)
+	if events != 0 {
+		t.Errorf("event count = %d, want no scan-started event for a lost claim", events)
+	}
+}
+
+// The other half of the same window: the flag is committed but the sweep has not
+// reached this row yet, so the claim itself has to see the opt-out and roll back.
+func TestStartScan_rollsBackTheClaimWhenTheOptOutBeatsIt(t *testing.T) {
+	w, scan := newOptOutWorker(t, false)
+	at := time.Now().UTC()
+	if err := w.DB.Model(&db.Repository{}).Where("id = ?", scan.RepositoryID).
+		Update("federation_opt_out_at", &at).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := w.startScan(&scan); !errors.Is(err, errRepoOptedOut) {
+		t.Fatalf("startScan = %v, want errRepoOptedOut", err)
+	}
+	var got db.Scan
+	w.DB.First(&got, scan.ID)
+	if got.Status != db.ScanQueued {
+		t.Errorf("status = %q, want the claim rolled back to queued", got.Status)
+	}
+	if got.StartedAt != nil {
+		t.Error("a rolled-back claim must leave no started_at")
+	}
+	var events int64
+	w.DB.Model(&db.AuditEvent{}).Count(&events)
+	if events != 0 {
+		t.Errorf("event count = %d, want no scan-started event for a rolled-back claim", events)
 	}
 }
 

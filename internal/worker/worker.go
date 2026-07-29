@@ -635,7 +635,7 @@ func (w *Worker) wrap(h handler) func(context.Context, []byte) error {
 		}()
 
 		if err := w.startScan(&scan); err != nil {
-			return err
+			return w.dropUnclaimedScan(&scan, err)
 		}
 
 		if w.RefreshEcosystemsCache != nil && !scan.Repository.IsLocal() {
@@ -677,23 +677,79 @@ func (w *Worker) cancelOptedOut(scan *db.Scan) {
 		"scan", scan.ID, "repo", scan.RepositoryID)
 }
 
-// startScan records the running state and its audit event in one transaction
-// so a scan never appears to have started without a corresponding timeline
-// entry.
+// errScanClaimLost means the row left `queued` between the dispatch gate
+// reading it and this worker claiming it, so whoever moved it already owns its
+// fate. errRepoOptedOut means the maintainer opted out in that same window.
+// Neither is a job failure: wrap drops the job.
+var (
+	errScanClaimLost = errors.New("scan is no longer queued")
+	errRepoOptedOut  = errors.New("repository opted out of federated scanning")
+)
+
+// dropUnclaimedScan turns a claim startScan refused into the job's outcome: nil
+// when the row was taken out from under this pickup, so goqite drops the job
+// instead of retrying expensive work, and err itself for a real failure. An
+// opt-out gets its terminal row written here, since the rolled-back claim left
+// the scan queued with nothing else about to run it.
+func (w *Worker) dropUnclaimedScan(scan *db.Scan, err error) error {
+	switch {
+	case errors.Is(err, errRepoOptedOut):
+		w.cancelOptedOut(scan)
+		return nil
+	case errors.Is(err, errScanClaimLost):
+		w.Log.Info("dropping job: scan left the queue during pickup", "scan", scan.ID)
+		return nil
+	}
+	return err
+}
+
+// startScan claims a queued scan for this worker and records its audit event in
+// one transaction, so a scan never appears to have started without a
+// corresponding timeline entry.
+//
+// The claim is conditional rather than a blind Save, because nothing serialises
+// the dispatch gate above against the opt-out sweep: a Save would write every
+// column and resurrect as running a row the sweep had just cancelled. The
+// opt-out re-read comes after the UPDATE on purpose: the row is write-locked
+// from there until commit, so an opt-out either landed before it, and is seen
+// here in time to roll the claim back, or lands after and finds a running row
+// for its own sweep to stop. Reading first would leave a gap between the read
+// and the write for exactly the interleaving this closes.
 func (w *Worker) startScan(scan *db.Scan) error {
 	now := time.Now()
-	scan.Status = db.ScanRunning
-	scan.StatusPriority = db.StatusPriorityFor(db.ScanRunning)
-	scan.StartedAt = &now
-	scan.Log = ""
-	scan.Error = ""
+	backend := scan.Backend
 	if br, ok := w.Runner.(BackendReporter); ok {
-		scan.Backend = br.Backend()
+		backend = br.Backend()
 	}
 	return w.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(scan).Error; err != nil {
+		res := tx.Model(&db.Scan{}).Where("id = ? AND status = ?", scan.ID, db.ScanQueued).
+			Updates(map[string]any{
+				"status":          db.ScanRunning,
+				"status_priority": db.StatusPriorityFor(db.ScanRunning),
+				"started_at":      &now,
+				"log":             "",
+				"error":           "",
+				"backend":         backend,
+			})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errScanClaimLost
+		}
+		var repo db.Repository
+		if err := tx.Select("id, federation_opt_out_at").First(&repo, scan.RepositoryID).Error; err != nil {
 			return err
 		}
+		if repo.FederationOptedOut() {
+			return errRepoOptedOut
+		}
+		scan.Status = db.ScanRunning
+		scan.StatusPriority = db.StatusPriorityFor(db.ScanRunning)
+		scan.StartedAt = &now
+		scan.Log = ""
+		scan.Error = ""
+		scan.Backend = backend
 		return db.LogScanEvent(tx, db.AuditEventScanStarted, scan)
 	})
 }
