@@ -307,6 +307,12 @@ func (w *Worker) maxRateLimitAutoResumeDelay() time.Duration {
 // the same text on a queued row it flips itself.
 const CancelledByUser = "cancelled by user"
 
+// errorColumn names scans.error in the Updates maps and Select lists below, the
+// way internal/web names it errorKey. The column is written from a dozen places
+// in this file, and spelling it out once more collides with the KindError event
+// kind, which carries the same string for an unrelated reason.
+const errorColumn = "error"
+
 // runningScan tracks one in-flight scan: the func that aborts it, plus the
 // reason the abort should be recorded under. Without the reason, every
 // cancellation reads "cancelled by user" whatever asked for it, so a scan
@@ -728,7 +734,7 @@ func (w *Worker) startScan(scan *db.Scan) error {
 				"status_priority": db.StatusPriorityFor(db.ScanRunning),
 				"started_at":      &now,
 				"log":             "",
-				"error":           "",
+				errorColumn:       "",
 				"backend":         backend,
 			})
 		if res.Error != nil {
@@ -969,7 +975,7 @@ func (w *Worker) pauseQueuedOnAccountError(triggerID uint) {
 		Updates(map[string]any{
 			"status":          db.ScanPaused,
 			"status_priority": db.StatusPriorityFor(db.ScanPaused),
-			"error":           reason,
+			errorColumn:       reason,
 			"finished_at":     &now,
 		})
 	if res.Error != nil {
@@ -1012,7 +1018,7 @@ func (w *Worker) applyAccountPauseReset(triggerID uint, baseError string, resetA
 	trigRes := w.DB.Model(&db.Scan{}).
 		Where("id = ? AND status = ? AND (paused_until IS NULL OR paused_until < ?)", triggerID, db.ScanPaused, effective).
 		Updates(map[string]any{
-			"error":        appendAutoResume(baseError, effective),
+			errorColumn:    appendAutoResume(baseError, effective),
 			"paused_until": effective,
 		})
 	if trigRes.Error != nil {
@@ -1039,7 +1045,7 @@ func (w *Worker) applyAccountPauseReset(triggerID uint, baseError string, resetA
 		Where("id != ? AND status = ? AND error LIKE ? AND (paused_until IS NULL OR paused_until < ?)",
 			triggerID, db.ScanPaused, accountPauseReasonBase+"%", effective).
 		Updates(map[string]any{
-			"error":        accountPauseReason(effective),
+			errorColumn:    accountPauseReason(effective),
 			"paused_until": effective,
 		}).Error; err != nil {
 		return nil, err
@@ -1047,7 +1053,7 @@ func (w *Worker) applyAccountPauseReset(triggerID uint, baseError string, resetA
 	// Trigger rows carry Claude detail, so rewrite them individually. The
 	// update re-checks the guard to avoid clobbering concurrent changes.
 	var triggers []db.Scan
-	if err := w.DB.Select("id", "error").
+	if err := w.DB.Select("id", errorColumn).
 		Where("id != ? AND status = ? AND error LIKE ? AND error NOT LIKE ? AND (paused_until IS NULL OR paused_until < ?)",
 			triggerID, db.ScanPaused, AccountPausePrefix+"%", accountPauseReasonBase+"%", effective).
 		Find(&triggers).Error; err != nil {
@@ -1058,7 +1064,7 @@ func (w *Worker) applyAccountPauseReset(triggerID uint, baseError string, resetA
 			Where("id = ? AND status = ? AND error LIKE ? AND error NOT LIKE ? AND (paused_until IS NULL OR paused_until < ?)",
 				tr.ID, db.ScanPaused, AccountPausePrefix+"%", accountPauseReasonBase+"%", effective).
 			Updates(map[string]any{
-				"error":        replaceAutoResume(tr.Error, effective),
+				errorColumn:    replaceAutoResume(tr.Error, effective),
 				"paused_until": effective,
 			})
 		if res.Error != nil {
@@ -1139,7 +1145,7 @@ func (w *Worker) resumeAccountPaused(ctx context.Context) (int, error) {
 		return 0, errors.New("queue not configured")
 	}
 	var scans []db.Scan
-	if err := w.DB.Select("id", "kind", "finding_id", "error", "paused_until").
+	if err := w.DB.Select("id", "kind", "finding_id", errorColumn, "paused_until").
 		Where("status = ? AND error LIKE ? AND paused_until IS NOT NULL AND paused_until <= ?",
 			db.ScanPaused, AccountPausePrefix+"%", w.now().UTC()).
 		Order("id").
@@ -1151,7 +1157,7 @@ func (w *Worker) resumeAccountPaused(ctx context.Context) (int, error) {
 		updates := map[string]any{
 			"status":          db.ScanQueued,
 			"status_priority": db.StatusPriorityFor(db.ScanQueued),
-			"error":           "",
+			errorColumn:       "",
 			"finished_at":     nil,
 			"paused_until":    nil,
 		}
@@ -1171,7 +1177,7 @@ func (w *Worker) resumeAccountPaused(ctx context.Context) (int, error) {
 			restoreErr := w.DB.Model(&db.Scan{}).Where("id = ?", sc.ID).Updates(map[string]any{
 				"status":          db.ScanPaused,
 				"status_priority": db.StatusPriorityFor(db.ScanPaused),
-				"error":           appendAutoResumeFailure(sc.Error, err),
+				errorColumn:       appendAutoResumeFailure(sc.Error, err),
 				"finished_at":     &now,
 				"paused_until":    sc.PausedUntil,
 			}).Error
