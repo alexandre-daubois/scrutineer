@@ -2,6 +2,7 @@ package interchange
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"filippo.io/age"
+	"filippo.io/age/agessh"
+	"golang.org/x/crypto/ssh"
 )
 
 func certificate(t *testing.T, status string) Statement {
@@ -36,6 +39,25 @@ func testIdentity(t *testing.T) *age.X25519Identity {
 		t.Fatal(err)
 	}
 	return id
+}
+
+// testSSHRecipient returns an SSH identity and the recipient a recipients
+// file loads for it, carrying the key the rotation check fingerprints it by.
+func testSSHRecipient(t *testing.T) (age.Identity, Recipient) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := agessh.NewEd25519Identity(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id, Recipient{Recipient: id.Recipient(), Key: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))}
 }
 
 func TestNewCertificatePicksPredicateTypeFromVerdict(t *testing.T) {
@@ -218,6 +240,58 @@ func TestWriteFeedReEncryptsOnRecipientChange(t *testing.T) {
 	}
 }
 
+// SSH keys are what scrutineer documents as the default, and an agessh
+// recipient renders neither its key nor anything else, so a set holding one is
+// the case where a membership change would go unnoticed.
+func TestWriteFeedReEncryptsOnMixedSSHRecipientChange(t *testing.T) {
+	dir := t.TempDir()
+	sshID, sshRec := testSSHRecipient(t)
+	x := testIdentity(t)
+	rec := certificate(t, "regressed")
+	members := FeedKeys{Recipients: []age.Recipient{sshRec, x.Recipient()}, Identities: []age.Identity{sshID}}
+	if err := WriteFeed(dir, TierMembers, []Statement{rec}, members); err != nil {
+		t.Fatal(err)
+	}
+
+	names, err := recordFiles(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, names[0])
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteFeed(dir, TierMembers, []Statement{rec}, members); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("an unchanged mixed recipient set must not rewrite the feed")
+	}
+
+	joinerID, joinerRec := testSSHRecipient(t)
+	if records, _ := ReadFeed(dir, []age.Identity{joinerID}); records[0].Err == nil {
+		t.Fatal("the joining SSH identity must not read the feed before it is a recipient")
+	}
+	members.Recipients = append(members.Recipients, joinerRec)
+	if err := WriteFeed(dir, TierMembers, []Statement{rec}, members); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []age.Identity{sshID, x, joinerID} {
+		records, err := ReadFeed(dir, []age.Identity{id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(records) != 1 || records[0].Err != nil {
+			t.Fatalf("every member of the new set must read the unchanged record: %+v", records)
+		}
+	}
+}
+
 type opaqueRecipient struct{}
 
 func (opaqueRecipient) Wrap([]byte) ([]*age.Stanza, error) { return nil, nil }
@@ -227,6 +301,14 @@ func TestWriteFeedRefusesUnfingerprintableRecipient(t *testing.T) {
 	keys := FeedKeys{Recipients: []age.Recipient{opaqueRecipient{}}, Identities: []age.Identity{id}}
 	if err := WriteFeed(t.TempDir(), TierMembers, []Statement{certificate(t, "bypass")}, keys); err == nil {
 		t.Fatal("a recipient that cannot be fingerprinted must be refused, since its removal would go unnoticed")
+	}
+}
+
+func TestWriteFeedRefusesRecipientWithoutKey(t *testing.T) {
+	id := testIdentity(t)
+	keys := FeedKeys{Recipients: []age.Recipient{Recipient{Recipient: id.Recipient()}}, Identities: []age.Identity{id}}
+	if err := WriteFeed(t.TempDir(), TierMembers, []Statement{certificate(t, "bypass")}, keys); err == nil {
+		t.Fatal("a recipient carrying no key must be refused: an empty key digests every member the same")
 	}
 }
 
@@ -404,6 +486,58 @@ func TestReadFeedReportsUnreadableRecords(t *testing.T) {
 	}
 	if ok != 1 || failed != 2 {
 		t.Fatalf("expected the valid record plus two reported failures, got %d ok / %d failed", ok, failed)
+	}
+}
+
+// A record-shaped symlink is reported, not skipped. Skipping it would hide the
+// entry from both sides: an importer would miss a record without being told,
+// and an export would leave the symlink in place while claiming the feed holds
+// exactly what it published. Pruning it unlinks the symlink, never its target.
+func TestReadFeedReportsSymlinkedRecord(t *testing.T) {
+	dir, outside := t.TempDir(), t.TempDir()
+	victim := filepath.Join(outside, "secrets")
+	if err := os.WriteFile(victim, []byte("not ours\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := optOut(t, "https://github.com/acme/lib")
+	if err := WriteFeed(dir, TierPublic, []Statement{rec}, FeedKeys{}); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(dir, "optout", strings.Repeat("44", 32)+".json")
+	if err := os.Symlink(victim, planted); err != nil {
+		t.Fatal(err)
+	}
+	records, err := ReadFeed(dir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected the published record plus the symlinked one, got %+v", records)
+	}
+	var ok, failed int
+	for _, r := range records {
+		if r.Err == nil {
+			ok++
+		} else {
+			failed++
+		}
+	}
+	if ok != 1 || failed != 1 {
+		t.Fatalf("expected the valid record plus one reported failure, got %d ok / %d failed", ok, failed)
+	}
+
+	if err := WriteFeed(dir, TierPublic, []Statement{rec}, FeedKeys{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(planted); err == nil {
+		t.Fatal("a record-shaped symlink absent from the export must be pruned")
+	}
+	body, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "not ours\n" {
+		t.Fatalf("pruning must unlink the symlink, not touch its target, got %q", body)
 	}
 }
 

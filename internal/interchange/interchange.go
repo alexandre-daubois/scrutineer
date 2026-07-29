@@ -47,13 +47,15 @@ const (
 // certificate/v1 record may carry.
 const CertificateStatusFixed = "fixed"
 
-// CertificateStatusesV2 are the non-clean verdicts certificate/v2 accepts,
+// certificateStatusesV2 are the non-clean verdicts certificate/v2 accepts,
 // mirroring the enum in interchange.schema.json. Sorted, so a query built
 // from it has stable text. A verdict outside this set and
 // CertificateStatusFixed is not publishable at all: exporters filter on it
 // rather than handing the schema a record it will reject, since a single
-// unpublishable row would otherwise fail the whole export.
-var CertificateStatusesV2 = []string{"bypass", "regressed", "variant"}
+// unpublishable row would otherwise fail the whole export. Unexported until
+// something outside this package needs it, so nothing can mutate the set the
+// schema is the contract for.
+var certificateStatusesV2 = []string{"bypass", "regressed", "variant"}
 
 // recordKinds names the feed subdirectory each predicate type is filed
 // under. Both certificate revisions share one directory: they are the same

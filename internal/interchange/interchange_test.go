@@ -3,6 +3,7 @@ package interchange
 import (
 	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -160,6 +161,35 @@ func TestStatementShape(t *testing.T) {
 	})
 	if cert.Subject[0].Digest["sha256"] != variant.Subject[0].Digest["sha256"] {
 		t.Fatal("advisory id case and padding must not change the certificate subject digest")
+	}
+}
+
+// The Go list is what an exporter filters on and the schema enum is what
+// rejects anything past it, so the two drifting apart either drops a
+// publishable verdict from every export or fails a whole export on one row.
+func TestCertificateStatusesV2MirrorTheSchema(t *testing.T) {
+	var doc struct {
+		Defs struct {
+			CertificateV2 struct {
+				Properties struct {
+					Status struct {
+						Enum []string `json:"enum"`
+					} `json:"status"`
+				} `json:"properties"`
+			} `json:"certificateV2"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(schemaJSON, &doc); err != nil {
+		t.Fatal(err)
+	}
+	schemaStatuses := slices.Sorted(slices.Values(doc.Defs.CertificateV2.Properties.Status.Enum))
+	if !slices.Equal(schemaStatuses, certificateStatusesV2) {
+		t.Fatalf("certificateStatusesV2 %v does not mirror the schema enum %v", certificateStatusesV2, schemaStatuses)
+	}
+	for _, status := range certificateStatusesV2 {
+		if got := NewCertificate(CertificatePredicate{Status: status}).PredicateType; got != PredicateTypeCertificateV2 {
+			t.Errorf("verdict %q must route to certificate/v2, got %s", status, got)
+		}
 	}
 }
 

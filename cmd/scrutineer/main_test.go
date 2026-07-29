@@ -18,6 +18,7 @@ import (
 
 	"scrutineer/internal/config"
 	"scrutineer/internal/db"
+	"scrutineer/internal/interchange"
 	"scrutineer/internal/web"
 	"scrutineer/internal/worker"
 )
@@ -573,6 +574,33 @@ func TestLoadRecipients_mixedKeyTypes(t *testing.T) {
 	}
 	if len(recs) != 2 {
 		t.Fatalf("got %d recipients, want 2 (one SSH, one age)", len(recs))
+	}
+}
+
+// A feed fingerprints its recipients by their public key to notice a
+// membership change, and an agessh recipient cannot render its own, so the
+// loader has to carry it. The authorized_keys comment is not part of the key:
+// two lines differing only by it are the same member and must digest the same,
+// or editing a comment re-encrypts the whole feed.
+func TestLoadRecipients_sshKeysCarryTheirKey(t *testing.T) {
+	_, sshPub := genSSHKey(t)
+	recs, err := loadRecipients(writeTestKey(t, []byte(sshPub)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bare, ok := recs[0].(interchange.Recipient)
+	if !ok {
+		t.Fatalf("an SSH recipient must carry its key, got %T", recs[0])
+	}
+	if bare.Key == "" {
+		t.Fatal("an SSH recipient with no key cannot be fingerprinted")
+	}
+	commented, err := loadRecipients(writeTestKey(t, []byte(strings.TrimRight(sshPub, "\n")+" alex@example.com\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := commented[0].(interchange.Recipient).Key; got != bare.Key {
+		t.Fatalf("the authorized_keys comment must not change the key, got %q want %q", got, bare.Key)
 	}
 }
 

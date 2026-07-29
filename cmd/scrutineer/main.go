@@ -29,6 +29,7 @@ import (
 	"scrutineer/internal/bundledassets"
 	"scrutineer/internal/config"
 	"scrutineer/internal/db"
+	"scrutineer/internal/interchange"
 	"scrutineer/internal/queue"
 	"scrutineer/internal/skills"
 	"scrutineer/internal/web"
@@ -1057,7 +1058,18 @@ func loadRecipients(path string) ([]age.Recipient, error) {
 		case strings.HasPrefix(line, "age1"):
 			r, perr = age.ParseX25519Recipient(line)
 		case strings.HasPrefix(line, "ssh-"):
-			r, perr = agessh.ParseRecipient(line)
+			// An agessh recipient keeps no handle on its key, and the feed's
+			// rotation check needs one to notice a membership change, so it is
+			// captured here. The marshalled form rather than the line itself:
+			// the trailing comment is not part of the key and must not read as
+			// a new recipient set.
+			pk, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+			if err != nil {
+				return nil, err
+			}
+			if r, perr = agessh.ParseRecipient(line); perr == nil {
+				r = interchange.Recipient{Recipient: r, Key: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk)))}
+			}
 		default:
 			perr = fmt.Errorf("unrecognised recipient key format: %q", line)
 		}

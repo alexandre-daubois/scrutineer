@@ -65,6 +65,29 @@ type FeedKeys struct {
 	Identities []age.Identity
 }
 
+// Recipient is an age recipient paired with the public key it was parsed
+// from. Only age's own X25519 recipient can render itself back as text; the
+// SSH types keep no handle on their key, and SSH is what scrutineer
+// documents as the default, so the fingerprint the rotation check needs has
+// to be carried from the parse site or a membership change on an SSH-keyed
+// feed goes unnoticed.
+type Recipient struct {
+	age.Recipient
+	Key string
+}
+
+// WrapWithLabels forwards to the wrapped recipient's own implementation:
+// embedding an interface hides it, and age silently falls back to Wrap,
+// which is how a post-quantum recipient would end up mixed with a classic
+// one.
+func (r Recipient) WrapWithLabels(fileKey []byte) ([]*age.Stanza, []string, error) {
+	if inner, ok := r.Recipient.(age.RecipientWithLabels); ok {
+		return inner.WrapWithLabels(fileKey)
+	}
+	s, err := r.Recipient.Wrap(fileKey)
+	return s, nil, err
+}
+
 // WriteFeed makes dir hold exactly recs. Every record is validated against
 // the shipped schema and refused when the tier does not carry its kind, so
 // a misrouted record fails the export rather than leaking a live weakness
@@ -176,15 +199,33 @@ func recipientsRotation(dir string, recipients []age.Recipient) (string, bool, e
 func recipientsDigest(recipients []age.Recipient) (string, error) {
 	keys := make([]string, 0, len(recipients))
 	for _, r := range recipients {
-		s, ok := r.(fmt.Stringer)
-		if !ok {
-			return "", fmt.Errorf("recipient of type %T cannot be fingerprinted, so a membership change would go unnoticed", r)
+		key, err := recipientKey(r)
+		if err != nil {
+			return "", err
 		}
-		keys = append(keys, strings.ToLower(strings.TrimSpace(s.String())))
+		keys = append(keys, strings.ToLower(strings.TrimSpace(key)))
 	}
 	slices.Sort(keys)
 	h := sha256.Sum256([]byte(strings.Join(slices.Compact(keys), "\n")))
 	return hex.EncodeToString(h[:]), nil
+}
+
+// recipientKey returns the public key text a recipient is fingerprinted by,
+// preferring the one captured at parse time. A recipient that yields none is
+// refused rather than fingerprinted as empty: an empty key collapses every
+// such recipient onto the same digest, which is exactly the membership change
+// this is here to notice.
+func recipientKey(r age.Recipient) (string, error) {
+	switch v := r.(type) {
+	case Recipient:
+		if strings.TrimSpace(v.Key) == "" {
+			return "", errors.New("recipient carries no public key, so a membership change would go unnoticed")
+		}
+		return v.Key, nil
+	case fmt.Stringer:
+		return v.String(), nil
+	}
+	return "", fmt.Errorf("recipient of type %T cannot be fingerprinted, so a membership change would go unnoticed", r)
 }
 
 // writeRecord writes one record file, leaving it untouched when it already
@@ -304,6 +345,13 @@ func readRecord(path string, identities []age.Identity) (Statement, []byte, erro
 // reader. A symlink anywhere on a managed path is refused rather than
 // followed: WriteFeed removes whatever this returns, so a symlinked kind
 // directory would have it delete files outside the feed entirely.
+//
+// A record-shaped entry that is not a regular file is still listed. Dropping
+// it here would hide it from both sides: ReadFeed would omit the record
+// without reporting anything, and WriteFeed would leave it in place while
+// claiming the feed holds exactly what it published. Listed, readRegular
+// refuses it on read and os.Remove unlinks the entry itself, never its
+// target, on prune.
 func recordFiles(dir string) ([]string, error) {
 	var out []string
 	for _, kind := range sortedKinds() {
@@ -323,9 +371,6 @@ func recordFiles(dir string) ([]string, error) {
 			return nil, err
 		}
 		for _, e := range entries {
-			if !e.Type().IsRegular() {
-				continue
-			}
 			if name := e.Name(); strings.HasSuffix(name, recordExt) || strings.HasSuffix(name, encryptedRecordExt) {
 				out = append(out, filepath.Join(kind, name))
 			}

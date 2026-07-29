@@ -70,12 +70,19 @@ happen to change since they joined, and takes those same records away from a
 member removed. It is written only after every record carries the new set, so
 an interrupted rotation is retried rather than recorded as complete. A
 recipient whose key cannot be rendered as text is refused outright, since its
-removal could not be detected.
+removal could not be detected. Only age's own X25519 recipient can render one;
+an SSH recipient, which is the documented default, keeps no handle on its key,
+so the key is captured where the recipients file is parsed and carried with the
+recipient. Its canonical `authorized_keys` form, at that: a trailing comment is
+not part of the key and editing one must not read as a new member set.
 
 A directory served this way is a checkout whose contents a peer controls, so
 a symlink on a managed path (a kind directory, or a file where a record
 belongs) fails the operation instead of being followed: writing and pruning
-stay under the directory itself.
+stay under the directory itself. A record-shaped path that is not a regular
+file is still listed as a record, so reading reports it as a failed record
+rather than omitting it silently, and an export prunes it, unlinking the entry
+itself and never what it points at.
 
 `interchange.Tier` names which kinds a set may carry, enforced at write time
 so a misrouted record fails rather than leaking: the public tier takes
