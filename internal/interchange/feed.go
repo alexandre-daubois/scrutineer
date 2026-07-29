@@ -84,7 +84,7 @@ func (r Recipient) WrapWithLabels(fileKey []byte) ([]*age.Stanza, []string, erro
 	if inner, ok := r.Recipient.(age.RecipientWithLabels); ok {
 		return inner.WrapWithLabels(fileKey)
 	}
-	s, err := r.Recipient.Wrap(fileKey)
+	s, err := r.Wrap(fileKey)
 	return s, nil, err
 }
 

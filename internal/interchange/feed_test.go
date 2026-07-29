@@ -43,7 +43,7 @@ func testIdentity(t *testing.T) *age.X25519Identity {
 
 // testSSHRecipient returns an SSH identity and the recipient a recipients
 // file loads for it, carrying the key the rotation check fingerprints it by.
-func testSSHRecipient(t *testing.T) (age.Identity, Recipient) {
+func testSSHRecipient(t *testing.T) (*agessh.Ed25519Identity, Recipient) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
