@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"scrutineer/internal/db"
 	"scrutineer/internal/worker"
 )
@@ -261,6 +263,104 @@ func TestRunScheduledScan_rereadsOptOutRecordedAfterTheSnapshot(t *testing.T) {
 	}
 	if skip.Error != "maintainer opted out of federated scanning" {
 		t.Errorf("skip reason = %q; a stale snapshot must not let the sync through", skip.Error)
+	}
+}
+
+// The gate at the top of enqueueSkillWith runs before the model, the ref and the
+// rest of the row are resolved, so an opt-out can commit while the enqueue is
+// still assembling it. The scan must not survive that: created and left queued,
+// it reports accepted work on a repository whose maintainer just refused.
+func TestEnqueueSkill_refusedWhenTheOptOutLandsBeforeTheScanIsCommitted(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	repo := seedOptOutRepo(t, s, false)
+	skill := db.Skill{Name: "security-deep-dive", Active: true}
+	s.DB.Create(&skill)
+
+	// Fires inside the creating transaction, right after the scan row is
+	// inserted: from that transaction's point of view the maintainer opted out
+	// between the gate and the commit. The rollback undoes this write too, so the
+	// assertions below are about the scan, not about the flag.
+	if err := s.DB.Callback().Create().After("gorm:create").
+		Register("test:opt_out_mid_enqueue", func(tx *gorm.DB) {
+			if tx.Statement.Schema == nil || tx.Statement.Schema.Name != "Scan" {
+				return
+			}
+			at := time.Now().UTC()
+			if err := tx.Session(&gorm.Session{NewDB: true}).Model(&db.Repository{}).
+				Where("id = ?", repo.ID).Update("federation_opt_out_at", &at).Error; err != nil {
+				t.Error(err)
+			}
+		}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.DB.Callback().Create().Remove("test:opt_out_mid_enqueue") }()
+
+	if _, err := s.enqueueSkill(context.Background(), repo.ID, skill.ID, ""); !errors.Is(err, ErrRepoFederationOptOut) {
+		t.Fatalf("enqueue = %v, want ErrRepoFederationOptOut", err)
+	}
+	var scans int64
+	s.DB.Model(&db.Scan{}).Where("repository_id = ?", repo.ID).Count(&scans)
+	if scans != 0 {
+		t.Fatalf("the scan must roll back with the refusal, got %d row(s)", scans)
+	}
+}
+
+// A live read of the flag only narrows the scheduler's window: the opt-out can
+// commit right after it, and the upstream push and remote HEAD lookup still
+// reach the maintainer's host. Recording it therefore waits for the firing in
+// progress, and then stops what that firing enqueued.
+func TestRunScheduledScan_optOutRecordedMidFiringWaitsForItAndStopsTheScans(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	s.DB.Create(&db.Skill{Name: deepDiveSkillName, Description: "d", Body: "b", OutputFile: "report.json", Version: 1, Active: true, Source: "ui"})
+	s.DB.Create(&db.Skill{Name: threatModelSkillName, Description: "t", Body: "b", OutputFile: "report.json", Version: 1, Active: true, Source: "ui"})
+	repo := seedOptOutRepo(t, s, false)
+	upstream := "https://127.0.0.1:1/mirror.git"
+	s.DB.Model(&db.Repository{}).Where("id = ?", repo.ID).Update("upstream_url", upstream)
+
+	reached, release := make(chan struct{}), make(chan struct{})
+	s.resolveRemoteHead = func(context.Context, db.Repository) (string, error) { return "deadbeef", nil }
+	s.syncUpstream = func(context.Context, string, string) error {
+		close(reached)
+		<-release
+		return nil
+	}
+
+	fired := make(chan struct{})
+	go func() {
+		defer close(fired)
+		s.runScheduledScan(context.Background(), db.Repository{
+			ID: repo.ID, Name: repo.Name, URL: repo.URL, UpstreamURL: upstream,
+		})
+	}()
+	<-reached
+
+	posted := make(chan int, 1)
+	go func() { posted <- postForm(t, s, optOutPath(repo.ID), url.Values{"opt_out": {"1"}}).Code }()
+	select {
+	case code := <-posted:
+		t.Fatalf("the opt-out was recorded mid-firing (status %d): the check and the network calls it gates are not serialised with it", code)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	<-fired
+	select {
+	case code := <-posted:
+		if code >= 400 {
+			t.Fatalf("opt-out status %d", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the opt-out never completed after the firing released the repository")
+	}
+
+	var live int64
+	s.DB.Model(&db.Scan{}).
+		Where("repository_id = ? AND status IN ?", repo.ID, []db.ScanStatus{db.ScanQueued, db.ScanRunning, db.ScanPaused}).
+		Count(&live)
+	if live != 0 {
+		t.Errorf("%d scan(s) still alive; the opt-out must stop what the firing enqueued", live)
 	}
 }
 

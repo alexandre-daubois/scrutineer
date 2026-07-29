@@ -164,6 +164,13 @@ type Server struct {
 	// process, including scan-token API deduplication and automatic fan-out.
 	agentEnqueueMu sync.Mutex
 
+	// repoFederationLocks serialises, per repository, recording a federation
+	// opt-out against the scheduler firing that repository. See
+	// lockRepoFederation. repoFederationMu guards the map itself, not the
+	// sections.
+	repoFederationMu    sync.Mutex
+	repoFederationLocks map[uint]*sync.Mutex
+
 	// runnerStatus is the result of the boot-time runner-image staleness check
 	// (issue #337), set once by main shortly after startup and read by the
 	// settings page to render the stale-image banner. The zero value renders
@@ -2866,7 +2873,26 @@ func (s *Server) enqueueSkillWith(ctx context.Context, repoID, skillID uint, opt
 		SkillsRepoSHA:      s.SkillsRepoSHA,
 		APIToken:           NewAPIToken(),
 	}
-	if err := s.DB.Create(&scan).Error; err != nil {
+	// The opt-out check at the top of this function ran before every field above
+	// was resolved, so re-check it inside the creating transaction: the row is
+	// write-locked from the INSERT until commit, which leaves an opt-out only two
+	// places to land. Before the INSERT, and the read below sees it and rolls the
+	// scan back; after the commit, and the sweep that follows recording it finds a
+	// queued row to cancel. Reading before the INSERT instead would put the window
+	// back where it was, just narrower.
+	if err := s.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&scan).Error; err != nil {
+			return err
+		}
+		var live db.Repository
+		if err := tx.Select("id, federation_opt_out_at").First(&live, repoID).Error; err != nil {
+			return err
+		}
+		if live.FederationOptedOut() {
+			return ErrRepoFederationOptOut
+		}
+		return nil
+	}); err != nil {
 		return 0, err
 	}
 	prio := worker.PrioScan

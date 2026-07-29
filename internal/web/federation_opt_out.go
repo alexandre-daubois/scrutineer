@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -23,6 +24,8 @@ func (s *Server) repoFederationOptOut(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	unlock := s.lockRepoFederation(repo.ID)
+	defer unlock()
 	optOut := r.FormValue("opt_out") != ""
 	updates := map[string]any{"federation_opt_out_at": nil, "federation_opt_out_reason": ""}
 	if optOut {
@@ -75,6 +78,31 @@ func (s *Server) stopScansForOptOut(repoID uint) error {
 		s.cancelScan(&running[i], worker.OptOutCancelReason)
 	}
 	return nil
+}
+
+// lockRepoFederation takes one repository's federation section and returns its
+// release. Two sections must not straddle each other: recording the opt-out plus
+// the sweep that stops the work already under way, and the scheduler's read of
+// the flag followed by the upstream push and remote HEAD lookup it gates. A live
+// read alone only narrows that second window, since the opt-out can commit
+// between the read and the network call it was meant to prevent. Held per
+// repository rather than globally because the section spans git I/O, and a slow
+// repository must not stall an unrelated maintainer's request; one mutex per
+// repository is left in the map for the process's lifetime, which is bounded by
+// the repository table.
+func (s *Server) lockRepoFederation(repoID uint) func() {
+	s.repoFederationMu.Lock()
+	if s.repoFederationLocks == nil {
+		s.repoFederationLocks = map[uint]*sync.Mutex{}
+	}
+	mu, ok := s.repoFederationLocks[repoID]
+	if !ok {
+		mu = &sync.Mutex{}
+		s.repoFederationLocks[repoID] = mu
+	}
+	s.repoFederationMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
 }
 
 // repoFederationOptedOut reads the live opt-out state for one repository. A

@@ -116,6 +116,11 @@ func (s *Server) scheduleTick(ctx context.Context, now time.Time) {
 // diff-rescan group (which falls back to full coverage when no baseline
 // exists, e.g. on a never-scanned repository).
 func (s *Server) runScheduledScan(ctx context.Context, repo db.Repository) {
+	// Held for the whole firing, so the opt-out cannot commit between the check
+	// below and the network calls it gates: recording one waits here, then sweeps
+	// whatever this firing enqueued. See lockRepoFederation.
+	unlock := s.lockRepoFederation(repo.ID)
+	defer unlock()
 	// Checked before any network call: enqueueSkillWith would refuse an
 	// opted-out repository anyway, but only after the upstream mirror push
 	// and the remote HEAD lookup have already contacted their host, which is
