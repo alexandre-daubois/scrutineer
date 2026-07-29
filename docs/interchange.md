@@ -169,7 +169,10 @@ rewrite the whole feed.
 
 Both run hourly from one goroutine, starting with an immediate pass so a
 freshly configured feed populates without waiting out a tick. The job is
-dormant when no feed is configured.
+dormant when no feed is configured. The import runs first: an opt-out landing
+this pass withdraws its repository from the `route` and `certificate` records,
+and exporting first would keep publishing the disclosure route of a repository
+a peer has just said not to contact for another whole tick.
 
 The export syncs each tier's working clone under `<data>/work/feeds/<tier>`,
 hard-resetting to the branch's remote-tracking ref so local commits that
@@ -251,11 +254,15 @@ Startup also refuses `federation_members_feed` without both
 (each would prune what the other publishes), and any feed remote carrying
 credentials: the remote reaches the job's error messages and log fields, so
 a token in one would end up in the logs. Configure a git credential helper
-on the host instead.
+on the host instead. The refusal itself names the remote with its userinfo
+replaced, since that message is what the startup logger prints.
 
 Feed remotes are pushed with the ambient git credentials and
 `GIT_TERMINAL_PROMPT=0`, so a remote whose credentials are missing fails the
-job fast instead of blocking it on a prompt nobody can answer.
+job fast instead of blocking it on a prompt nobody can answer, and under
+`GIT_ALLOW_PROTOCOL=https:ssh:file`, so an ambient `url.<base>.insteadOf` on
+the host cannot rewrite a validated feed remote onto a transport (`ext::`,
+which hands git a shell command) that startup never approved.
 
 Like the rest of the web surface, `/claim-check` sits behind the loopback
 Host check (see [threatmodel.md](../threatmodel.md)). Exposing it to peers is

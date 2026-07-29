@@ -99,15 +99,25 @@ func TestValidateFeedRemote(t *testing.T) {
 			t.Errorf("%q must be accepted: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{
+	for _, bad := range []struct{ remote, secret string }{
 		// A token as the username is the common PAT spelling and the remote
 		// reaches the log on every pass, so it is refused like a password.
-		"https://ghp_secret@github.com/org/feed.git",
-		"https://x-access-token:ghp_secret@github.com/org/feed.git",
-		"user:pw@github.com:org/feed.git",
+		{"https://ghp_secret@github.com/org/feed.git", "ghp_secret"},
+		{"https://x-access-token:ghp_secret@github.com/org/feed.git", "ghp_secret"},
+		{"user:pw@github.com:org/feed.git", "user:pw"},
 	} {
-		if err := ValidateFeedRemote(bad); err == nil {
-			t.Errorf("%q embeds credentials and must be refused", bad)
+		err := ValidateFeedRemote(bad.remote)
+		if err == nil {
+			t.Errorf("%q embeds credentials and must be refused", bad.remote)
+			continue
+		}
+		// The refusal is what the fatal logger prints at startup, so it must
+		// not carry the very token the check exists to keep out of the log.
+		if strings.Contains(err.Error(), bad.secret) {
+			t.Errorf("the refusal for %q leaks the credential: %v", bad.remote, err)
+		}
+		if !strings.Contains(err.Error(), "github.com") {
+			t.Errorf("the refusal for %q must still name the remote: %v", bad.remote, err)
 		}
 	}
 }
@@ -240,6 +250,37 @@ func TestCertificateRecords_newestVerdictWins(t *testing.T) {
 	}
 }
 
+// Nothing enforces uniqueness on (repository_id, uuid) and the url is
+// optional, so the grouped subselect must not answer "no URL" for an advisory
+// one of whose duplicate rows carries a real one.
+func TestCertificateRecords_prefersANonEmptyAdvisoryURL(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := seedFeedRepo(t, s, "https://github.com/acme/lib", "")
+	seedAudit(t, s, repo.ID, "uuid-1", "fixed")
+	for _, url := range []string{"", "https://osv.dev/GHSA-xxxx"} {
+		if err := s.DB.Create(&db.Advisory{RepositoryID: repo.ID, UUID: "uuid-1", URL: url}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	recs, err := s.certificateRecords(interchange.TierPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected one certificate, got %d", len(recs))
+	}
+	var p interchange.CertificatePredicate
+	if err := interchange.DecodePredicate(recs[0], &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.AdvisoryURL != "https://osv.dev/GHSA-xxxx" {
+		t.Errorf("advisory_url = %q, want the non-empty duplicate", p.AdvisoryURL)
+	}
+}
+
 func TestExportFeed_publishesThenNoOps(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
@@ -312,6 +353,39 @@ func TestExportFeed_picksUpAThirdPartyCommit(t *testing.T) {
 	}
 	if got := remoteCommitCount(t, remote); got != 2 {
 		t.Fatalf("an unchanged record set must add no commit on top of the peer's, got %d", got)
+	}
+}
+
+// A clean working tree says the records match this clone's HEAD, never that
+// the remote has that commit. An operator who recreates the feed repository
+// (wrong remote first time, a wipe and retry) must not leave the tier silently
+// publishing nothing for the life of the process.
+func TestExportFeed_republishesOntoARecreatedRemote(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	s.Worker.DataDir = t.TempDir()
+	remote := initBareRemote(t)
+
+	repo := seedFeedRepo(t, s, "https://github.com/acme/lib", "security@acme.example")
+	seedAudit(t, s, repo.ID, "uuid-clean", "fixed")
+	if err := s.exportFeed(context.Background(), interchange.TierPublic, remote); err != nil {
+		t.Fatal(err)
+	}
+
+	// The remote is wiped back to an empty repository under the running
+	// instance, whose clone still holds the published commit.
+	if err := os.RemoveAll(remote); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "init", "--quiet", "--bare", remote).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+
+	if err := s.exportFeed(context.Background(), interchange.TierPublic, remote); err != nil {
+		t.Fatal(err)
+	}
+	if got := remoteCommitCount(t, remote); got == 0 {
+		t.Fatal("a recreated remote must be republished, not left empty forever")
 	}
 }
 
@@ -430,7 +504,7 @@ func TestImportFeed_storesRecordsAndAppliesOptOut(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rows []db.InterchangeRecord
-	if err := s.DB.Find(&rows).Error; err != nil {
+	if err := s.DB.Where("feed = ?", remote).Find(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 || rows[0].PredicateType != interchange.PredicateTypeOptOut {
@@ -530,7 +604,7 @@ func TestImportFeed_optOutAppliesToARepositoryImportedLater(t *testing.T) {
 		t.Fatal(err)
 	}
 	var row db.InterchangeRecord
-	if err := s.DB.First(&row).Error; err != nil {
+	if err := s.DB.Where("feed = ?", remote).First(&row).Error; err != nil {
 		t.Fatal(err)
 	}
 	if row.AppliedAt != nil {
@@ -583,7 +657,7 @@ func TestImportFeed_skipsAnUnreadableRecordAndKeepsTheRest(t *testing.T) {
 		t.Error("the valid opt-out published alongside the bad file must still apply")
 	}
 	var stored int64
-	s.DB.Model(&db.InterchangeRecord{}).Count(&stored)
+	s.DB.Model(&db.InterchangeRecord{}).Where("feed = ?", remote).Count(&stored)
 	if stored != 1 {
 		t.Errorf("only the readable record must be archived, got %d rows", stored)
 	}
@@ -710,6 +784,43 @@ func TestSetDisclosureChannel_stampsOnlyOnChange(t *testing.T) {
 	s.DB.First(&got, repo.ID)
 	if got.DisclosureChannelAt.Equal(stamped) {
 		t.Error("a changed channel must move the timestamp")
+	}
+}
+
+// One pass has to honour an opt-out it just imported. Exporting first would
+// publish the disclosure route of a repository the peer has said not to
+// contact, and leave it on the public feed until the next tick an hour later.
+func TestRunFederation_importsBeforeExporting(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	s.Worker.DataDir = t.TempDir()
+
+	seedFeedRepo(t, s, "https://github.com/acme/quiet", "security@acme.example")
+	s.FederationImportFeeds = []string{publishPeerFeed(t, []interchange.Statement{
+		interchange.NewOptOut(interchange.OptOutPredicate{
+			Repository: "https://github.com/acme/quiet", RequestedAt: feedTime(t), Reason: "please stop",
+		}),
+	})}
+	s.FederationPublicFeed = initBareRemote(t)
+
+	s.runFederation(context.Background())
+
+	published, err := interchange.ReadFeed(filepath.Join(s.Worker.DataDir, "feeds", "public"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]int{}
+	for _, rec := range published {
+		if rec.Err != nil {
+			t.Fatalf("record %s: %v", rec.Path, rec.Err)
+		}
+		kinds[rec.Statement.PredicateType]++
+	}
+	if kinds[interchange.PredicateTypeRoute] != 0 {
+		t.Errorf("the route of a repository that opted out this pass must not be published, got %d", kinds[interchange.PredicateTypeRoute])
+	}
+	if kinds[interchange.PredicateTypeOptOut] != 1 {
+		t.Errorf("expected the imported opt-out relayed on the public feed, got %d", kinds[interchange.PredicateTypeOptOut])
 	}
 }
 

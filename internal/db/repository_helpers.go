@@ -1,6 +1,7 @@
 package db
 
 import (
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -11,6 +12,11 @@ import (
 // query that must honour an opt-out shares this text so a sixth surface
 // cannot be written with a subtly different one.
 const FederationNotOptedOut = "repositories.federation_opt_out_at IS NULL"
+
+// FederationHasOptedOut is its inverse, for the queries that select the
+// opted-out repositories rather than exclude them: the public feed's optout
+// records and the bulk-resume subquery. Same reason as above, one text.
+const FederationHasOptedOut = "repositories.federation_opt_out_at IS NOT NULL"
 
 // FederationOptedOut reports whether this repository's maintainer asked
 // federated instances neither to scan it nor to contact them. The Go-side
@@ -28,7 +34,13 @@ func (r Repository) FederationOptedOut() bool { return r.FederationOptOutAt != n
 // rather than trusting a row the caller loaded earlier: the maintainers skill
 // hands over a repository it read when the scan started, which an analyst may
 // have edited during the hour since.
+//
+// The value is trimmed here rather than at each call site: the skill hands
+// over whatever the model emitted, so an answer that differs from the stored
+// one only by a trailing newline would otherwise read as a change, re-stamp
+// the timestamp, and republish the route record it exists to hold still.
 func SetDisclosureChannel(gdb *gorm.DB, repoID uint, value string) error {
+	value = strings.TrimSpace(value)
 	return gdb.Transaction(func(tx *gorm.DB) error {
 		var repo Repository
 		if err := tx.Select("id, disclosure_channel").First(&repo, repoID).Error; err != nil {

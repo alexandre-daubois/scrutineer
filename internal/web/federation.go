@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -56,7 +57,12 @@ func (s *Server) StartFederation(ctx context.Context) {
 	}
 }
 
+// runFederation imports before it exports. An opt-out that lands this pass
+// withdraws its repository from the route and certificate records, so
+// exporting first would keep publishing the disclosure route of a repository
+// a peer has just said not to contact for another whole tick.
 func (s *Server) runFederation(ctx context.Context) {
+	s.importFeeds(ctx)
 	for _, feed := range []struct {
 		tier   interchange.Tier
 		remote string
@@ -71,6 +77,9 @@ func (s *Server) runFederation(ctx context.Context) {
 			s.Log.Error("federation: export feed", "tier", feed.tier, "err", err)
 		}
 	}
+}
+
+func (s *Server) importFeeds(ctx context.Context) {
 	if len(s.FederationImportFeeds) == 0 {
 		return
 	}
@@ -94,7 +103,7 @@ func (s *Server) runFederation(ctx context.Context) {
 // what makes a withdrawn opt-out or a re-audited certificate disappear
 // from the feed instead of sitting next to its replacement.
 func (s *Server) exportFeed(ctx context.Context, tier interchange.Tier, remote string) error {
-	dir, err := s.feedClone(ctx, string(tier), remote)
+	dir, tracking, err := s.feedClone(ctx, string(tier), remote)
 	if err != nil {
 		return err
 	}
@@ -109,7 +118,7 @@ func (s *Server) exportFeed(ctx context.Context, tier interchange.Tier, remote s
 	if err := interchange.WriteFeed(dir, tier, recs, keys); err != nil {
 		return err
 	}
-	pushed, err := commitAndPushFeed(ctx, dir, fmt.Sprintf("scrutineer: %s feed, %d records", tier, len(recs)))
+	pushed, err := commitAndPushFeed(ctx, dir, tracking, fmt.Sprintf("scrutineer: %s feed, %d records", tier, len(recs)))
 	if err != nil {
 		return err
 	}
@@ -123,8 +132,9 @@ func (s *Server) exportFeed(ctx context.Context, tier interchange.Tier, remote s
 // in a record. A local (file://) URL is a path on the operator's own
 // filesystem, and an empty one canonicalises to a value the schema refuses,
 // which would abort the whole export over a single unusable row.
-// Qualified so it reads the same in the certificate query, which joins.
-const publishableRepo = "repositories.url != '' AND repositories.url NOT LIKE 'file://%'"
+// Qualified so it reads the same in the certificate query, which joins, and
+// built from LocalScheme so it cannot drift from what marks a row local.
+const publishableRepo = "repositories.url != '' AND repositories.url NOT LIKE '" + LocalScheme + "%'"
 
 // feedRecords builds every record this instance publishes on a tier.
 // Opted-out repositories are excluded from route and certificate records as
@@ -154,7 +164,7 @@ func (s *Server) feedRecords(tier interchange.Tier) ([]interchange.Statement, er
 func (s *Server) optOutRecords() ([]interchange.Statement, error) {
 	var rows []db.Repository
 	if err := s.DB.Select("url, federation_opt_out_at, federation_opt_out_reason").
-		Where("repositories.federation_opt_out_at IS NOT NULL").Where(publishableRepo).
+		Where(db.FederationHasOptedOut).Where(publishableRepo).
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -211,10 +221,13 @@ func (s *Server) certificateRecords(tier interchange.Tier) ([]interchange.Statem
 	// uniqueness on (repository_id, uuid) and parseAdvisoriesOutput inserts
 	// whatever the report listed, so a plain join would fan out and publish
 	// the same subject twice with an advisory_url picked by row order.
+	// NULLIF before the MIN: a URL is optional on an advisory row, and the
+	// empty string sorts first, so the plain aggregate would answer "no URL"
+	// for a uuid one of whose duplicates carries a real one.
 	q := s.DB.Model(&db.AdvisoryAudit{}).
 		Select("repositories.url, advisories.url AS advisory_url, advisory_audits.advisory_uuid AS advisory, advisory_audits.status, advisory_audits.`commit`, advisory_audits.created_at").
 		Joins("JOIN repositories ON repositories.id = advisory_audits.repository_id").
-		Joins("LEFT JOIN (SELECT repository_id, uuid, MIN(url) AS url FROM advisories GROUP BY repository_id, uuid) advisories"+
+		Joins("LEFT JOIN (SELECT repository_id, uuid, MIN(NULLIF(url, '')) AS url FROM advisories GROUP BY repository_id, uuid) advisories"+
 			" ON advisories.repository_id = advisory_audits.repository_id AND advisories.uuid = advisory_audits.advisory_uuid").
 		Where("advisory_audits.id IN (?)", s.DB.Model(&db.AdvisoryAudit{}).
 			Select("MAX(id)").Group("repository_id, advisory_uuid")).
@@ -254,7 +267,7 @@ func (s *Server) certificateRecords(tier interchange.Tier) ([]interchange.Statem
 // is logged and skipped so one bad file from a peer does not cost the rest
 // of the feed.
 func (s *Server) importFeed(ctx context.Context, remote string, repoIDs map[string]uint) error {
-	dir, err := s.feedClone(ctx, filepath.Join("import", feedDirName(remote)), remote)
+	dir, _, err := s.feedClone(ctx, filepath.Join("import", feedDirName(remote)), remote)
 	if err != nil {
 		return err
 	}
@@ -288,18 +301,24 @@ func (s *Server) importFeed(ctx context.Context, remote string, repoIDs map[stri
 		done, err := s.applyImportedRecord(rec.Statement, repoIDs, remote)
 		if err != nil {
 			s.Log.Error("federation: apply record", "remote", remote, "path", rec.Path, "err", err)
+			failed++
 			continue
 		}
 		if !done {
 			continue
 		}
-		applied++
 		if err := s.DB.Model(&db.InterchangeRecord{}).Where("id = ?", row.ID).
 			UpdateColumn("applied_at", time.Now().UTC()).Error; err != nil {
 			s.Log.Error("federation: stamp record", "remote", remote, "path", rec.Path, "err", err)
+			failed++
+			continue
 		}
+		applied++
 	}
-	s.Log.Info("federation: imported feed", "remote", remote, "stored", stored, "applied", applied, "skipped", failed)
+	// failed counts every record this pass could not carry through, apply
+	// errors included: a feed whose every apply fails must not read as a clean
+	// import that merely had nothing to do.
+	s.Log.Info("federation: imported feed", "remote", remote, "stored", stored, "applied", applied, "failed", failed)
 	return nil
 }
 
@@ -406,7 +425,7 @@ func (s *Server) applyImportedRecord(rec interchange.Statement, repoIDs map[stri
 		// peer's claim look like two independent ones. The channel goes back
 		// on the feed once an analyst changes it, which stamps it here.
 		return true, s.DB.Model(&db.Repository{}).Where("id = ?", repo.ID).Updates(map[string]any{
-			"disclosure_channel":    p.Channel + " (via " + feed + ")",
+			"disclosure_channel":    strings.TrimSpace(p.Channel) + " (via " + feed + ")",
 			"disclosure_channel_at": nil,
 		}).Error
 	}
@@ -450,7 +469,6 @@ func (s *Server) repoForRecord(repoIDs map[string]uint, url string) (db.Reposito
 // so its userinfo is read off the text before the path.
 func ValidateFeedRemote(raw string) error {
 	remote := strings.TrimSpace(raw)
-	credentialed := fmt.Errorf("federation feed remote %q must not contain credentials; configure a git credential helper on the host instead", raw)
 	if u, err := url.Parse(remote); err == nil && u.Scheme != "" && u.Host != "" {
 		// Over http(s) any userinfo is refused: as parse_repo_url.go puts it,
 		// tokens are commonly supplied as the username, so a bare-username
@@ -460,7 +478,8 @@ func ValidateFeedRemote(raw string) error {
 		if u.User != nil {
 			_, hasPassword := u.User.Password()
 			if hasPassword || u.Scheme == "http" || u.Scheme == "https" {
-				return credentialed
+				u.User = url.User(redactedUserinfo)
+				return credentialedRemote(u.String())
 			}
 		}
 		return nil
@@ -469,9 +488,20 @@ func ValidateFeedRemote(raw string) error {
 	// "/" can hold userinfo, so the path never confuses the check.
 	head, _, _ := strings.Cut(remote, "/")
 	if userinfo, _, ok := strings.Cut(head, "@"); ok && strings.Contains(userinfo, ":") {
-		return credentialed
+		_, rest, _ := strings.Cut(remote, "@")
+		return credentialedRemote(redactedUserinfo + "@" + rest)
 	}
 	return nil
+}
+
+const redactedUserinfo = "***"
+
+// credentialedRemote names the offending remote with its userinfo replaced
+// rather than verbatim. The refusal is returned from startup validation and
+// printed by the fatal logger, which is precisely the destination this check
+// exists to keep the token out of.
+func credentialedRemote(redacted string) error {
+	return fmt.Errorf("federation feed remote %q must not contain credentials; configure a git credential helper on the host instead", redacted)
 }
 
 // repoIDsByCanonicalURL keys the local repository ids by the same canonical
@@ -495,34 +525,48 @@ func (s *Server) repoIDsByCanonicalURL() (map[string]uint, error) {
 // afterwards. The reset is what keeps the export idempotent: local commits
 // from a previous run that never reached the remote are discarded rather
 // than accumulating into a push that conflicts forever.
-func (s *Server) feedClone(ctx context.Context, name, remote string) (string, error) {
+//
+// It also returns the branch's remote-tracking ref, empty when the remote does
+// not carry the branch, which is what tells the export whether the remote
+// already holds this clone's HEAD.
+func (s *Server) feedClone(ctx context.Context, name, remote string) (string, string, error) {
 	if s.Worker == nil || s.Worker.DataDir == "" {
-		return "", errors.New("no data directory configured")
+		return "", "", errors.New("no data directory configured")
 	}
 	dir := filepath.Join(s.Worker.DataDir, "feeds", name)
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
+		// Only an absent .git means "not cloned yet". Any other answer is the
+		// filesystem failing to say, and wiping a healthy working clone over a
+		// transient one would throw away the tier's history and re-clone.
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", "", err
+		}
 		// A clone that died partway leaves the destination populated but
 		// without .git, and git refuses a non-empty target with a permanent
 		// error, so the leftovers would wedge every later tick. The path is
 		// entirely scrutineer-owned and derived from the tier or a digest of
 		// the remote, never from user input, so clearing it is safe.
 		if err := os.RemoveAll(dir); err != nil {
-			return "", err
+			return "", "", err
 		}
 		if err := os.MkdirAll(filepath.Dir(dir), feedDirPerm); err != nil {
-			return "", err
+			return "", "", err
 		}
 		if out, err := runFeedGit(ctx, "", "clone", "--quiet", "--", remote, dir); err != nil {
-			return "", fmt.Errorf("clone %s: %s: %w", remote, out, err)
+			return "", "", fmt.Errorf("clone %s: %s: %w", remote, out, err)
 		}
-		return dir, nil
+		return dir, "", nil
 	}
 	branch, err := runFeedGit(ctx, dir, "symbolic-ref", "--short", "HEAD")
 	if err != nil {
-		return "", fmt.Errorf("resolve branch of %s: %s: %w", remote, branch, err)
+		return "", "", fmt.Errorf("resolve branch of %s: %s: %w", remote, branch, err)
 	}
-	if out, err := runFeedGit(ctx, dir, "fetch", "--quiet", "origin"); err != nil {
-		return "", fmt.Errorf("fetch %s: %s: %w", remote, out, err)
+	// --prune so a branch deleted on the remote takes its remote-tracking ref
+	// with it. Without it a feed repository that was recreated leaves a stale
+	// ref behind, and the reset below would sync this clone onto a commit the
+	// remote no longer has, with nothing downstream able to tell.
+	if out, err := runFeedGit(ctx, dir, "fetch", "--quiet", "--prune", "origin"); err != nil {
+		return "", "", fmt.Errorf("fetch %s: %s: %w", remote, out, err)
 	}
 	// Reset onto this branch's remote-tracking ref, not FETCH_HEAD: the fetch
 	// uses the clone's all-branches refspec, so FETCH_HEAD holds every branch
@@ -533,19 +577,19 @@ func (s *Server) feedClone(ctx context.Context, name, remote string) (string, er
 	// and the local state is already the whole feed.
 	tracking := "refs/remotes/origin/" + strings.TrimSpace(branch)
 	if _, err := runFeedGit(ctx, dir, "rev-parse", "--verify", "--quiet", tracking); err != nil {
-		return dir, nil
+		return dir, "", nil
 	}
 	if out, err := runFeedGit(ctx, dir, "reset", "--quiet", "--hard", tracking); err != nil {
-		return "", fmt.Errorf("reset %s: %s: %w", remote, out, err)
+		return "", "", fmt.Errorf("reset %s: %s: %w", remote, out, err)
 	}
-	return dir, nil
+	return dir, tracking, nil
 }
 
 // commitAndPushFeed commits the working tree and pushes it, reporting
-// whether anything was published. A clean tree means the feed already
-// matches what this instance stands behind, so the tick costs a fetch and
-// nothing else.
-func commitAndPushFeed(ctx context.Context, dir, message string) (bool, error) {
+// whether anything was published. A clean tree over a remote that already
+// holds this clone's HEAD means the feed matches what this instance stands
+// behind, so the tick costs a fetch and nothing else.
+func commitAndPushFeed(ctx context.Context, dir, tracking, message string) (bool, error) {
 	// --force so a stray .gitignore in the feed repository cannot make the
 	// job report a clean tree while silently publishing nothing.
 	if out, err := runFeedGit(ctx, dir, "add", "--all", "--force", "."); err != nil {
@@ -555,11 +599,19 @@ func commitAndPushFeed(ctx context.Context, dir, message string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("status: %s: %w", status, err)
 	}
-	if strings.TrimSpace(status) == "" {
-		return false, nil
-	}
-	if out, err := runFeedGit(ctx, dir, append(append([]string{}, feedCommitter...), "commit", "--quiet", "-m", message)...); err != nil {
-		return false, fmt.Errorf("commit: %s: %w", out, err)
+	if strings.TrimSpace(status) != "" {
+		if out, err := runFeedGit(ctx, dir, append(append([]string{}, feedCommitter...), "commit", "--quiet", "-m", message)...); err != nil {
+			return false, fmt.Errorf("commit: %s: %w", out, err)
+		}
+	} else {
+		// A clean tree only says the records match this clone's own HEAD, which
+		// says nothing about the remote: a feed repository recreated or rolled
+		// back under a running instance leaves the clone ahead of it, and
+		// stopping here would mean the tier silently never publishes again.
+		published, err := feedHeadIsPublished(ctx, dir, tracking)
+		if err != nil || published {
+			return false, err
+		}
 	}
 	if out, err := runFeedGit(ctx, dir, "push", "--quiet", "origin", "HEAD"); err != nil {
 		return false, fmt.Errorf("push: %s: %w", out, err)
@@ -567,15 +619,48 @@ func commitAndPushFeed(ctx context.Context, dir, message string) (bool, error) {
 	return true, nil
 }
 
+// feedHeadIsPublished reports whether the remote already carries this clone's
+// HEAD. An empty tracking ref means the remote does not carry the branch at
+// all, so nothing local has reached it.
+func feedHeadIsPublished(ctx context.Context, dir, tracking string) (bool, error) {
+	if tracking == "" {
+		return false, nil
+	}
+	head, err := runFeedGit(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return false, fmt.Errorf("resolve HEAD: %s: %w", head, err)
+	}
+	remote, err := runFeedGit(ctx, dir, "rev-parse", tracking)
+	if err != nil {
+		return false, fmt.Errorf("resolve %s: %s: %w", tracking, remote, err)
+	}
+	return strings.TrimSpace(head) == strings.TrimSpace(remote), nil
+}
+
+// feedGitEnv hardens every feed git invocation. GIT_TERMINAL_PROMPT=0 keeps a
+// feed remote whose credentials are missing failing fast instead of blocking
+// the job on a prompt no one can answer. GIT_ALLOW_PROTOCOL is the same hard
+// whitelist the clone package puts on its own remote-touching commands: it
+// overrides protocol.*.allow, so an ambient url.<base>.insteadOf rewriting a
+// feed remote to ext:: (which hands git a shell command) is refused after
+// ValidateFeedRemote has already approved the configured value. The three
+// transports are the ones a feed remote is documented with, "file" covering
+// both file:// and a local path.
+var feedGitEnv = []string{"GIT_TERMINAL_PROMPT=0", "GIT_ALLOW_PROTOCOL=https:ssh:file"}
+
 // runFeedGit runs one git command against a feed clone under the standard
-// network retry policy. GIT_TERMINAL_PROMPT=0 keeps a feed remote whose
-// credentials are missing failing fast instead of blocking the job on a
-// prompt no one can answer.
+// network retry policy.
 func runFeedGit(ctx context.Context, dir string, args ...string) (string, error) {
+	// The label names the subcommand, so the leading "-c key=value" pairs the
+	// commit invocation passes its identity with are skipped.
+	sub := args
+	for len(sub) > 2 && sub[0] == "-c" {
+		sub = sub[2:]
+	}
 	return clone.Retry{}.Do(ctx, clone.Command{
-		Label: "feed " + args[0],
+		Label: "feed " + sub[0],
 		Dir:   dir,
-		Env:   []string{"GIT_TERMINAL_PROMPT=0"},
+		Env:   feedGitEnv,
 		Args:  args,
 	})
 }
