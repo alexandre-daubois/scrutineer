@@ -2712,9 +2712,7 @@ func (s *Server) deleteRepository(repo db.Repository) (deletedRepository, error)
 		// Match scans by the *finding's* repo, not the scan's own: a finding-
 		// scoped scan can in principle live on a different repository_id than
 		// the finding it points at, and any scan referencing a doomed finding
-		// must have its NO ACTION link cleared or the finding delete 787s. The
-		// subquery also avoids materialising a (possibly >999) id list.
-		const findingsOfRepo = "finding_id IN (SELECT id FROM findings WHERE repository_id = ?)"
+		// must have its NO ACTION link cleared or the finding delete 787s.
 		var inFlight int64
 		if err := tx.Model(&db.Scan{}).
 			Where("(repository_id = ? OR "+findingsOfRepo+") AND status IN ?", repo.ID, repo.ID, inFlightScanStatuses()).
@@ -2740,19 +2738,8 @@ func (s *Server) deleteRepository(repo db.Repository) (deletedRepository, error)
 			Update("finding_id", nil).Error; err != nil {
 			return err
 		}
-		// Finding children. notes/comms/refs/history cascade from a finding
-		// delete, but are removed here too so the cleanup stays correct even
-		// when foreign_keys happens to be off on the serving connection.
-		if err := tx.Exec("DELETE FROM finding_labels_join WHERE "+findingsOfRepo, repo.ID).Error; err != nil {
+		if err := deleteFindingChildren(tx, repo.ID); err != nil {
 			return err
-		}
-		for _, child := range []any{
-			&db.FindingNote{}, &db.FindingCommunication{}, &db.FindingReference{},
-			&db.FindingHistory{}, &db.FindingDependent{}, &db.FindingReview{},
-		} {
-			if err := tx.Where(findingsOfRepo, repo.ID).Delete(child).Error; err != nil {
-				return err
-			}
 		}
 		for _, child := range []any{
 			&db.Finding{}, &db.Scan{}, &db.Subproject{}, &db.Dependency{},
@@ -2770,6 +2757,9 @@ func (s *Server) deleteRepository(repo db.Repository) (deletedRepository, error)
 			return err
 		}
 		if err := deleteRepoConversations(tx, repo.ID); err != nil {
+			return err
+		}
+		if err := reopenRepoInterchangeRecords(tx, repo.ID); err != nil {
 			return err
 		}
 		return tx.Delete(&repo).Error
@@ -2856,6 +2846,30 @@ func (s *Server) removeFindingArtifacts(deleted deletedFinding) {
 	}
 }
 
+// findingsOfRepo matches the rows linked to a repository's findings. Written
+// as a subquery rather than a materialised id list, which could exceed
+// sqlite's variable limit on a repository with many findings.
+const findingsOfRepo = "finding_id IN (SELECT id FROM findings WHERE repository_id = ?)"
+
+// deleteFindingChildren removes the rows hanging off a repository's findings.
+// notes/comms/refs/history cascade from the finding delete, but are removed
+// explicitly too so the cleanup stays correct even when foreign_keys happens
+// to be off on the connection serving the delete.
+func deleteFindingChildren(tx *gorm.DB, repoID uint) error {
+	if err := tx.Exec("DELETE FROM finding_labels_join WHERE "+findingsOfRepo, repoID).Error; err != nil {
+		return err
+	}
+	for _, child := range []any{
+		&db.FindingNote{}, &db.FindingCommunication{}, &db.FindingReference{},
+		&db.FindingHistory{}, &db.FindingDependent{}, &db.FindingReview{},
+	} {
+		if err := tx.Where(findingsOfRepo, repoID).Delete(child).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // deleteRepoConversations removes a repository's chat conversations and their
 // messages. Finding-scoped conversations carry the finding's repository_id, so
 // matching on it covers them too.
@@ -2864,6 +2878,16 @@ func deleteRepoConversations(tx *gorm.DB, repoID uint) error {
 		return err
 	}
 	return tx.Where("repository_id = ?", repoID).Delete(&db.Conversation{}).Error
+}
+
+// reopenRepoInterchangeRecords re-opens the peer records already applied to a
+// repository that is being deleted. The records themselves are not children
+// of it and stay: their stamp only ever meant "that row carries it", and
+// leaving it set would keep the next import pass from re-applying a
+// still-standing opt-out to the row a re-added repository gets.
+func reopenRepoInterchangeRecords(tx *gorm.DB, repoID uint) error {
+	return tx.Model(&db.InterchangeRecord{}).Where("applied_repository_id = ?", repoID).
+		Updates(map[string]any{"applied_at": nil, "applied_repository_id": 0}).Error
 }
 
 func deleteFindingConversations(tx *gorm.DB, findingID uint) error {
@@ -2883,8 +2907,10 @@ func (s *Server) repoDisclosureChannel(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	value := strings.TrimSpace(r.FormValue("disclosure_channel"))
-	if err := db.SetDisclosureChannel(s.DB, repo.ID, value); err != nil {
+	// Not trimmed here: SetDisclosureChannel trims, and it has to, since the
+	// comparison that decides whether to re-stamp the route record's
+	// verified_at is made against the trimmed value.
+	if err := db.SetDisclosureChannel(s.DB, repo.ID, r.FormValue("disclosure_channel")); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

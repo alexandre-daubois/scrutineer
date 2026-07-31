@@ -163,6 +163,27 @@ func TestValidateFederation(t *testing.T) {
 	}
 }
 
+// A whitespace-only remote must come out of validation as no remote at all.
+// ValidateFeedRemote trims its own copy and so reports it as fine, and every
+// != "" test downstream, StartFederation's included, would then read it as
+// configured and run an hourly clone job against a remote git cannot resolve.
+func TestValidateFederation_dropsBlankRemotes(t *testing.T) {
+	f := flags{
+		federationPublicFeed:  "  ",
+		federationMembersFeed: "\t",
+		federationImportFeeds: []string{" ", "  git@host:o/f.git  ", ""},
+	}
+	if err := validateFederation(&f); err != nil {
+		t.Fatalf("blank remotes are no configuration, not a bad one: %v", err)
+	}
+	if f.federationPublicFeed != "" || f.federationMembersFeed != "" {
+		t.Errorf("blank feeds left configured: public %q, members %q", f.federationPublicFeed, f.federationMembersFeed)
+	}
+	if !slices.Equal(f.federationImportFeeds, []string{"git@host:o/f.git"}) {
+		t.Errorf("import feeds = %#v, want only the real remote, trimmed", f.federationImportFeeds)
+	}
+}
+
 func TestFlagsMerge_zeroConfigLeavesDefaults(t *testing.T) {
 	f := &flags{addr: "127.0.0.1:8080", concurrency: 4, scanTimeout: time.Hour, set: map[string]bool{}}
 	f.merge(&config.Config{})

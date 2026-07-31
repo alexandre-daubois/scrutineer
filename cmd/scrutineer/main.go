@@ -137,8 +137,22 @@ type flags struct {
 // configurations that would leak or misfire: a members feed without age
 // recipients would push non-clean certificates in the clear, and one without
 // an identity could not read back what it published and so would re-encrypt
-// the whole feed on every tick.
+// the whole feed on every tick. It trims the feed remotes in f on the way
+// through, so a blank one reads as no feed everywhere downstream.
 func validateFederation(f *flags) error {
+	// Trimmed and emptied out here rather than only inside ValidateFeedRemote,
+	// which trims its own copy: a whitespace-only remote otherwise reads as
+	// configured for every != "" test below and for StartFederation, which
+	// would then clone a remote git cannot resolve, every tick.
+	f.federationPublicFeed = strings.TrimSpace(f.federationPublicFeed)
+	f.federationMembersFeed = strings.TrimSpace(f.federationMembersFeed)
+	var imports []string
+	for _, remote := range f.federationImportFeeds {
+		if remote = strings.TrimSpace(remote); remote != "" {
+			imports = append(imports, remote)
+		}
+	}
+	f.federationImportFeeds = imports
 	if f.federationSalt != "" && f.federationContact == "" {
 		return errors.New("federation: federation_contact is required when federation_salt is set")
 	}

@@ -175,7 +175,8 @@ and exporting first would keep publishing the disclosure route of a repository
 a peer has just said not to contact for another whole tick.
 
 The export syncs each tier's working clone under `<data>/work/feeds/<tier>`,
-hard-resetting to the branch's remote-tracking ref so local commits that
+re-pointing `origin` when the configured remote changed so editing a feed
+remote does not keep publishing to the old one, hard-resetting to the branch's remote-tracking ref so local commits that
 never landed are discarded rather than accumulating into a permanent push
 conflict, rewrites the clone to exactly the records this instance currently
 stands behind, and commits and pushes only if that changed something. An
@@ -199,7 +200,10 @@ repository this instance does not track yet, stays open and is retried on a
 later pass: a peer publishing an opt-out before this operator imports the
 repository would otherwise have it archived and never honoured. Bytes that
 differ from the archived ones clear the stamp, so a peer's correction is
-applied too.
+applied too. The stamp records which repository row it was written against,
+and deleting that repository clears it: a repository removed and re-added
+gets the peer's still-standing opt-out again rather than staying scannable
+behind a stamp naming a row that is gone.
 
 - an `optout` sets `federation_opt_out_at` on the matching repository
   whichever peer sent it, since refusing to scan is the conservative
@@ -210,7 +214,11 @@ applied too.
 - a `route` fills `disclosure_channel` only when this instance has none and
   the repository has not opted out, suffixed with the peer feed so an analyst
   can tell a peer's hint from an address the `maintainers` skill read out of
-  a verified SECURITY.md. It leaves `disclosure_channel_at` unset, which
+  a verified SECURITY.md. The one channel it also overwrites is the unstamped
+  hint this same feed left on an earlier pass, which is what makes a peer
+  correcting its own route take effect instead of being archived next to the
+  address it replaces; a stamped channel or another feed's hint is left
+  alone. It leaves `disclosure_channel_at` unset, which
   keeps the imported string off this instance's own export: republishing it
   would present a hint nobody here validated as a confirmed route, carry the
   peer feed remote into a public record, and make one peer's claim look like

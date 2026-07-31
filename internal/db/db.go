@@ -584,6 +584,13 @@ type InterchangeRecord struct {
 	// which is what stops the hourly pass from reinstating what an operator
 	// deliberately cleared.
 	AppliedAt *time.Time
+	// AppliedRepositoryID is the repository row the stamp above was written
+	// against, zero for the kinds that act on nothing local. Deleting that
+	// repository re-opens the record, since the stamp only ever meant "this
+	// row already carries it": without that, an opt-out applied before a
+	// repository was deleted and re-added would leave the new row scannable
+	// while the peer's request is still standing.
+	AppliedRepositoryID uint `gorm:"index"`
 
 	ReceivedAt time.Time
 }

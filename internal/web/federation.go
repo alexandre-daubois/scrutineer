@@ -29,8 +29,15 @@ const federationTick = time.Hour
 // feedCommitter identifies the export job's commits. Feed clones are
 // scrutineer-owned working copies and the host may have no git identity
 // configured at all, so the identity is passed per invocation rather than
-// read from global config.
-var feedCommitter = []string{"-c", "user.name=scrutineer", "-c", "user.email=scrutineer@localhost"}
+// read from global config. Signing is turned off for the same reason: a host
+// with commit.gpgsign set globally would fail every export commit, since
+// there is no key for the scrutineer identity and no prompt to answer under
+// GIT_TERMINAL_PROMPT=0.
+var feedCommitter = []string{
+	"-c", "user.name=scrutineer",
+	"-c", "user.email=scrutineer@localhost",
+	"-c", "commit.gpgsign=false",
+}
 
 // feedDirPerm is the mode of the feed working-clone directories under the
 // data directory.
@@ -298,7 +305,7 @@ func (s *Server) importFeed(ctx context.Context, remote string, repoIDs map[stri
 		// the next pass tries again. Advancing on the archive write alone would
 		// drop a maintainer's opt-out on a single transient failure, and would
 		// never honour one published before its repository was imported here.
-		done, err := s.applyImportedRecord(rec.Statement, repoIDs, remote)
+		repoID, done, err := s.applyImportedRecord(rec.Statement, repoIDs, remote)
 		if err != nil {
 			s.Log.Error("federation: apply record", "remote", remote, "path", rec.Path, "err", err)
 			failed++
@@ -307,8 +314,11 @@ func (s *Server) importFeed(ctx context.Context, remote string, repoIDs map[stri
 		if !done {
 			continue
 		}
+		// The repository the stamp was written against is recorded with it, so
+		// deleting that repository re-opens the record instead of leaving a
+		// stamp that names a row nothing carries any more.
 		if err := s.DB.Model(&db.InterchangeRecord{}).Where("id = ?", row.ID).
-			UpdateColumn("applied_at", time.Now().UTC()).Error; err != nil {
+			UpdateColumns(map[string]any{"applied_at": time.Now().UTC(), "applied_repository_id": repoID}).Error; err != nil {
 			s.Log.Error("federation: stamp record", "remote", remote, "path", rec.Path, "err", err)
 			failed++
 			continue
@@ -341,7 +351,13 @@ func (s *Server) storeImportedRecord(remote string, rec interchange.FeedRecord) 
 	now, raw := time.Now().UTC(), string(rec.Raw)
 	if res.RowsAffected == 0 {
 		row.Record, row.ReceivedAt = raw, now
-		return row, s.DB.Create(&row).Error
+		// Created before the return rather than inside it: Create fills row.ID,
+		// which the caller stamps against, and the order in which a return
+		// statement reads a plain operand next to a call is unspecified.
+		if err := s.DB.Create(&row).Error; err != nil {
+			return db.InterchangeRecord{}, err
+		}
+		return row, nil
 	}
 	if existing.Record == raw {
 		return existing, s.DB.Model(&existing).UpdateColumn("received_at", now).Error
@@ -363,22 +379,24 @@ func (s *Server) storeImportedRecord(remote string, rec interchange.FeedRecord) 
 // index: an opt-out applied earlier in the same pass (opt-outs sort before
 // routes) has already changed the columns this decision turns on.
 //
-// It reports whether the record is closed. False means the subject names no
-// repository this instance tracks, so the caller leaves the row open for a
-// later pass: a peer publishing an opt-out before this operator imports the
-// repository must not have it silently forgotten. The kinds that apply to
-// nothing local (certificates, claims) are closed on sight.
-func (s *Server) applyImportedRecord(rec interchange.Statement, repoIDs map[string]uint, feed string) (bool, error) {
+// It reports the repository the record was applied to, zero for the kinds
+// that act on nothing local, and whether the record is closed. Not closed
+// means the subject names no repository this instance tracks, so the caller
+// leaves the row open for a later pass: a peer publishing an opt-out before
+// this operator imports the repository must not have it silently forgotten.
+// The kinds that apply to nothing local (certificates, claims) are closed on
+// sight.
+func (s *Server) applyImportedRecord(rec interchange.Statement, repoIDs map[string]uint, feed string) (uint, bool, error) {
 	switch rec.PredicateType {
 	case interchange.PredicateTypeOptOut:
 		var p interchange.OptOutPredicate
 		if err := interchange.DecodePredicate(rec, &p); err != nil {
-			return false, err
+			return 0, false, err
 		}
 		repo, unlock, ok, err := s.repoForRecord(repoIDs, p.Repository)
 		defer unlock()
 		if err != nil || !ok {
-			return false, err
+			return 0, false, err
 		}
 		// An opt-out already recorded here keeps its own request date, which is
 		// what a peer is told the request was made on; only the sweep below is
@@ -390,7 +408,7 @@ func (s *Server) applyImportedRecord(rec interchange.Statement, repoIDs map[stri
 				"federation_opt_out_at":     &at,
 				"federation_opt_out_reason": p.Reason,
 			}).Error; err != nil {
-				return false, err
+				return 0, false, err
 			}
 		}
 		// Same order as the repo page's own handler: the flag commits first, so
@@ -398,19 +416,19 @@ func (s *Server) applyImportedRecord(rec interchange.Statement, repoIDs map[stri
 		// is stopped. An imported opt-out is the same maintainer's request, so
 		// it has to stop this instance's scans too and not merely refuse the
 		// next one.
-		return true, s.stopScansForOptOut(repo.ID)
+		return repo.ID, true, s.stopScansForOptOut(repo.ID)
 	case interchange.PredicateTypeRoute:
 		var p interchange.RoutePredicate
 		if err := interchange.DecodePredicate(rec, &p); err != nil {
-			return false, err
+			return 0, false, err
 		}
 		repo, unlock, ok, err := s.repoForRecord(repoIDs, p.Repository)
 		defer unlock()
 		if err != nil || !ok {
-			return false, err
+			return 0, false, err
 		}
-		if repo.DisclosureChannel != "" || repo.FederationOptedOut() {
-			return true, nil
+		if repo.FederationOptedOut() || !replaceableRoute(repo, feed) {
+			return repo.ID, true, nil
 		}
 		// The channel is where an unpublished GHSA draft and patch get
 		// mailed, so an imported one says where it came from: an analyst must
@@ -424,12 +442,45 @@ func (s *Server) applyImportedRecord(rec interchange.Statement, repoIDs map[stri
 		// its own confirmed route, peer feed remote and all, and make one
 		// peer's claim look like two independent ones. The channel goes back
 		// on the feed once an analyst changes it, which stamps it here.
-		return true, s.DB.Model(&db.Repository{}).Where("id = ?", repo.ID).Updates(map[string]any{
-			"disclosure_channel":    strings.TrimSpace(p.Channel) + " (via " + feed + ")",
-			"disclosure_channel_at": nil,
-		}).Error
+		//
+		// Conditional on the channel the decision above was taken against:
+		// the federation lock covers the opt-out flag, but disclosure_channel
+		// is written outside it by the repo page and the maintainers skill, so
+		// an unconditional write would drop an address an analyst saved
+		// between the read and here, on the one column that decides where an
+		// unpublished draft gets mailed. Zero rows means someone else owns the
+		// channel now, so the record stays open and the next pass decides
+		// again on what is actually stored.
+		res := s.DB.Model(&db.Repository{}).Where("id = ? AND disclosure_channel = ?", repo.ID, repo.DisclosureChannel).
+			Updates(map[string]any{
+				"disclosure_channel":    strings.TrimSpace(p.Channel) + viaFeed(feed),
+				"disclosure_channel_at": nil,
+			})
+		if res.Error != nil {
+			return 0, false, res.Error
+		}
+		return repo.ID, res.RowsAffected > 0, nil
 	}
-	return true, nil
+	return 0, true, nil
+}
+
+// viaFeed is the provenance suffix an imported channel carries, and the only
+// handle on where a channel came from once it is a plain string.
+func viaFeed(feed string) string { return " (via " + feed + ")" }
+
+// replaceableRoute reports whether an imported route may write over the
+// repository's current channel. An empty channel is free, and so is the
+// unstamped hint this same feed left on an earlier pass, which is exactly
+// what a peer's correction has to replace: without that, the corrected
+// record is archived and stamped while the superseded address stays in place.
+// Anything else is left alone. A stamped channel came from the maintainers
+// skill or an analyst and outranks any peer hint, and another feed's hint is
+// another peer's claim, not this one's to overwrite.
+func replaceableRoute(repo db.Repository, feed string) bool {
+	if repo.DisclosureChannel == "" {
+		return true
+	}
+	return repo.DisclosureChannelAt == nil && strings.HasSuffix(repo.DisclosureChannel, viaFeed(feed))
 }
 
 // repoForRecord resolves a record's repository URL to the current local row
@@ -450,7 +501,7 @@ func (s *Server) repoForRecord(repoIDs map[string]uint, url string) (db.Reposito
 	}
 	unlock := s.lockRepoFederation(id)
 	var repo db.Repository
-	err := s.DB.Select("id, disclosure_channel, federation_opt_out_at").First(&repo, id).Error
+	err := s.DB.Select("id, disclosure_channel, disclosure_channel_at, federation_opt_out_at").First(&repo, id).Error
 	if err != nil {
 		unlock()
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -466,7 +517,9 @@ func (s *Server) repoForRecord(repoIDs map[string]uint, url string) (db.Reposito
 // the job's error messages and log fields, so a credentialed remote would
 // leak its token into the logs. Both spellings are covered: the URL form
 // parses its userinfo, and the scp-style form does not parse as a URL at all,
-// so its userinfo is read off the text before the path.
+// so its userinfo is read off the text before the path. A bare username is
+// refused only where it can be carrying a PAT, which is http(s); ssh:// and
+// the scp-style form, which is ssh too, keep the ordinary git@host spelling.
 func ValidateFeedRemote(raw string) error {
 	remote := strings.TrimSpace(raw)
 	if u, err := url.Parse(remote); err == nil && u.Scheme != "" && u.Host != "" {
@@ -485,7 +538,9 @@ func ValidateFeedRemote(raw string) error {
 		return nil
 	}
 	// scp-style: [user[:password]@]host:path. Only the part before the first
-	// "/" can hold userinfo, so the path never confuses the check.
+	// "/" can hold userinfo, so the path never confuses the check. The form is
+	// ssh-only, so a password is refused and a bare username is not: git@host
+	// is how every ssh remote is written.
 	head, _, _ := strings.Cut(remote, "/")
 	if userinfo, _, ok := strings.Cut(head, "@"); ok && strings.Contains(userinfo, ":") {
 		_, rest, _ := strings.Cut(remote, "@")
@@ -534,39 +589,33 @@ func (s *Server) feedClone(ctx context.Context, name, remote string) (string, st
 		return "", "", errors.New("no data directory configured")
 	}
 	dir := filepath.Join(s.Worker.DataDir, "feeds", name)
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
-		// Only an absent .git means "not cloned yet". Any other answer is the
-		// filesystem failing to say, and wiping a healthy working clone over a
-		// transient one would throw away the tier's history and re-clone.
-		if !errors.Is(err, fs.ErrNotExist) {
+	fresh, err := ensureFeedClone(ctx, dir, remote)
+	if err != nil {
+		return "", "", err
+	}
+	// A clone made moments ago already points at remote and already carries
+	// every ref it advertises, so the retarget and the fetch are skipped: they
+	// would cost a second network round trip to learn nothing.
+	if !fresh {
+		// An existing clone is re-pointed when the configured remote changed:
+		// nothing else rewrites origin, so an operator editing federation_*_feed
+		// would keep fetching from and pushing to the remote this clone was first
+		// made against, leaving the new one empty with nothing saying why. The
+		// --prune fetch below then drops the old remote's tracking refs.
+		if err := retargetOrigin(ctx, dir, remote); err != nil {
 			return "", "", err
 		}
-		// A clone that died partway leaves the destination populated but
-		// without .git, and git refuses a non-empty target with a permanent
-		// error, so the leftovers would wedge every later tick. The path is
-		// entirely scrutineer-owned and derived from the tier or a digest of
-		// the remote, never from user input, so clearing it is safe.
-		if err := os.RemoveAll(dir); err != nil {
-			return "", "", err
+		// --prune so a branch deleted on the remote takes its remote-tracking ref
+		// with it. Without it a feed repository that was recreated leaves a stale
+		// ref behind, and the reset below would sync this clone onto a commit the
+		// remote no longer has, with nothing downstream able to tell.
+		if out, err := runFeedGit(ctx, dir, "fetch", "--quiet", "--prune", "origin"); err != nil {
+			return "", "", fmt.Errorf("fetch %s: %s: %w", remote, out, err)
 		}
-		if err := os.MkdirAll(filepath.Dir(dir), feedDirPerm); err != nil {
-			return "", "", err
-		}
-		if out, err := runFeedGit(ctx, "", "clone", "--quiet", "--", remote, dir); err != nil {
-			return "", "", fmt.Errorf("clone %s: %s: %w", remote, out, err)
-		}
-		return dir, "", nil
 	}
 	branch, err := runFeedGit(ctx, dir, "symbolic-ref", "--short", "HEAD")
 	if err != nil {
 		return "", "", fmt.Errorf("resolve branch of %s: %s: %w", remote, branch, err)
-	}
-	// --prune so a branch deleted on the remote takes its remote-tracking ref
-	// with it. Without it a feed repository that was recreated leaves a stale
-	// ref behind, and the reset below would sync this clone onto a commit the
-	// remote no longer has, with nothing downstream able to tell.
-	if out, err := runFeedGit(ctx, dir, "fetch", "--quiet", "--prune", "origin"); err != nil {
-		return "", "", fmt.Errorf("fetch %s: %s: %w", remote, out, err)
 	}
 	// Reset onto this branch's remote-tracking ref, not FETCH_HEAD: the fetch
 	// uses the clone's all-branches refspec, so FETCH_HEAD holds every branch
@@ -583,6 +632,65 @@ func (s *Server) feedClone(ctx context.Context, name, remote string) (string, st
 		return "", "", fmt.Errorf("reset %s: %s: %w", remote, out, err)
 	}
 	return dir, tracking, nil
+}
+
+// ensureFeedClone clones remote into dir when dir is not a working clone
+// already, and reports whether it did. The caller resolves the tracking ref
+// on both paths: a fresh clone of a remote that already holds these records
+// has a clean tree, and answering "no tracking ref" there would read as
+// "nothing local ever reached the remote" and push, logging a publication
+// that never happened, on the first tick after every re-clone.
+func ensureFeedClone(ctx context.Context, dir, remote string) (bool, error) {
+	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+		return false, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		// Only an absent .git means "not cloned yet". Any other answer is the
+		// filesystem failing to say, and wiping a healthy working clone over a
+		// transient one would throw away the tier's history and re-clone.
+		return false, err
+	}
+	// A clone that died partway leaves the destination populated but
+	// without .git, and git refuses a non-empty target with a permanent
+	// error, so the leftovers would wedge every later tick. The path is
+	// entirely scrutineer-owned and derived from the tier or a digest of
+	// the remote, never from user input, so clearing it is safe.
+	if err := os.RemoveAll(dir); err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), feedDirPerm); err != nil {
+		return false, err
+	}
+	// The Reset hook is what makes the retry budget mean anything here: a
+	// clone killed mid-transfer leaves the destination populated, and git
+	// answers a non-empty target with a permanent error, so without it the
+	// second attempt fails on the leftovers of the first rather than on the
+	// remote. DestReset only offers to clear a destination that is absent or
+	// empty right now, which the RemoveAll above has just made it.
+	if out, err := (clone.Retry{}).Do(ctx, clone.Command{
+		Label: "feed clone",
+		Env:   feedGitEnv,
+		Args:  []string{"clone", "--quiet", "--", remote, dir},
+		Reset: clone.DestReset(dir),
+	}); err != nil {
+		return false, fmt.Errorf("clone %s: %s: %w", remote, out, err)
+	}
+	return true, nil
+}
+
+// retargetOrigin points the clone's origin at remote when it does not
+// already match.
+func retargetOrigin(ctx context.Context, dir, remote string) error {
+	origin, err := runFeedGit(ctx, dir, "remote", "get-url", "origin")
+	if err != nil {
+		return fmt.Errorf("resolve origin of %s: %s: %w", remote, origin, err)
+	}
+	if strings.TrimSpace(origin) == remote {
+		return nil
+	}
+	if out, err := runFeedGit(ctx, dir, "remote", "set-url", "origin", remote); err != nil {
+		return fmt.Errorf("retarget origin to %s: %s: %w", remote, out, err)
+	}
+	return nil
 }
 
 // commitAndPushFeed commits the working tree and pushes it, reporting

@@ -8,10 +8,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"filippo.io/age"
+	"gorm.io/gorm"
 
 	"scrutineer/internal/db"
 	"scrutineer/internal/interchange"
@@ -389,6 +391,32 @@ func TestExportFeed_republishesOntoARecreatedRemote(t *testing.T) {
 	}
 }
 
+// An operator repointing federation_public_feed at a new remote must have the
+// feed follow: nothing but this rewrites the working clone's origin, so the
+// job would keep publishing to the remote the clone was first made against
+// while the newly configured one stays empty with nothing saying why.
+func TestExportFeed_followsAChangedRemote(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	s.Worker.DataDir = t.TempDir()
+	seedFeedRepo(t, s, "https://github.com/acme/routed", "security@acme.example")
+
+	old := initBareRemote(t)
+	if err := s.exportFeed(context.Background(), interchange.TierPublic, old); err != nil {
+		t.Fatal(err)
+	}
+	moved := initBareRemote(t)
+	if err := s.exportFeed(context.Background(), interchange.TierPublic, moved); err != nil {
+		t.Fatal(err)
+	}
+	if remoteCommitCount(t, moved) == 0 {
+		t.Error("the newly configured remote must receive the feed")
+	}
+	if n := remoteCommitCount(t, old); n != 1 {
+		t.Errorf("the abandoned remote must stop receiving pushes, got %d commits", n)
+	}
+}
+
 func TestExportFeed_membersTierIsEncrypted(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
@@ -459,15 +487,24 @@ func publishPeerFeed(t *testing.T, recs []interchange.Statement) string {
 func publishPeerFeedWithRaw(t *testing.T, recs []interchange.Statement, raw map[string]string) string {
 	t.Helper()
 	remote := initBareRemote(t)
+	pushPeerFeed(t, remote, recs, raw)
+	return remote
+}
+
+// pushPeerFeed rewrites an existing peer remote to exactly recs, which is how
+// a test publishes a peer's correction of a record it has already published.
+func pushPeerFeed(t *testing.T, remote string, recs []interchange.Statement, raw map[string]string) {
+	t.Helper()
 	work := t.TempDir()
+	if out, err := exec.Command("git", "clone", "--quiet", remote, work).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
 	run := func(args ...string) {
 		t.Helper()
 		if out, err := exec.Command("git", append([]string{"-C", work}, args...)...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	run("init", "--quiet")
-	run("remote", "add", "origin", remote)
 	if err := interchange.WriteFeed(work, interchange.TierPublic, recs, interchange.FeedKeys{}); err != nil {
 		t.Fatal(err)
 	}
@@ -483,7 +520,6 @@ func publishPeerFeedWithRaw(t *testing.T, recs []interchange.Statement, raw map[
 	run("add", "--all", ".")
 	run("-c", "user.name=peer", "-c", "user.email=peer@localhost", "commit", "--quiet", "-m", "feed")
 	run("push", "--quiet", "origin", "HEAD")
-	return remote
 }
 
 func TestImportFeed_storesRecordsAndAppliesOptOut(t *testing.T) {
@@ -748,6 +784,224 @@ func TestImportFeed_optOutStopsTheScansAlreadyQueued(t *testing.T) {
 		if got.Error != worker.OptOutCancelReason {
 			t.Errorf("%s scan error = %q, want %q", name, got.Error, worker.OptOutCancelReason)
 		}
+	}
+}
+
+// A peer that corrects a route it already published must have the correction
+// take effect. The changed bytes re-open the record, and the address sitting
+// on the repository is this same feed's own unstamped hint, so it is the one
+// thing an import is allowed to overwrite; without that the correction is
+// archived and stamped while the superseded address keeps receiving drafts.
+func TestImportFeed_peerCorrectsItsOwnRoute(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	s.Worker.DataDir = t.TempDir()
+
+	repo := seedFeedRepo(t, s, "https://github.com/acme/lib", "")
+	adopted := seedFeedRepo(t, s, "https://github.com/acme/adopted", "")
+	route := func(url, channel string, at time.Time) interchange.Statement {
+		return interchange.NewRoute(interchange.RoutePredicate{Repository: url, Channel: channel, VerifiedAt: at})
+	}
+	remote := publishPeerFeed(t, []interchange.Statement{
+		route("https://github.com/acme/lib", "old@example.com", feedTime(t)),
+		route("https://github.com/acme/adopted", "old@example.com", feedTime(t)),
+	})
+	if err := s.importFeed(context.Background(), remote, mustRepoIDs(t, s)); err != nil {
+		t.Fatal(err)
+	}
+	// An analyst who has checked the hint adopts it, which stamps it. From
+	// there it is this instance's own confirmed route and the peer no longer
+	// gets to move it.
+	at := feedTime(t)
+	if err := s.DB.Model(&db.Repository{}).Where("id = ?", adopted.ID).
+		Update("disclosure_channel_at", &at).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	pushPeerFeed(t, remote, []interchange.Statement{
+		route("https://github.com/acme/lib", "new@example.com", feedTime(t).Add(time.Hour)),
+		route("https://github.com/acme/adopted", "new@example.com", feedTime(t).Add(time.Hour)),
+	}, nil)
+	if err := s.importFeed(context.Background(), remote, mustRepoIDs(t, s)); err != nil {
+		t.Fatal(err)
+	}
+
+	var corrected db.Repository
+	s.DB.First(&corrected, repo.ID)
+	if corrected.DisclosureChannel != "new@example.com"+viaFeed(remote) {
+		t.Errorf("channel = %q, want the peer's correction", corrected.DisclosureChannel)
+	}
+	if corrected.DisclosureChannelAt != nil {
+		t.Errorf("a corrected hint is still a hint and must stay unstamped, got %v", corrected.DisclosureChannelAt)
+	}
+	var kept db.Repository
+	s.DB.First(&kept, adopted.ID)
+	if kept.DisclosureChannel != "old@example.com"+viaFeed(remote) {
+		t.Errorf("a stamped channel is the analyst's and must survive the peer's correction, got %q", kept.DisclosureChannel)
+	}
+}
+
+// The federation lock covers the opt-out flag, not disclosure_channel: the
+// repo page and the maintainers skill both write that column without taking
+// it. So the import's write has to be conditional on the channel its decision
+// was taken against, or an address an analyst saves between the read and the
+// write is silently replaced by a peer's hint and left unstamped, on the one
+// column that decides where an unpublished draft gets mailed.
+//
+// The interleaving is forced rather than raced: a one-shot GORM update
+// callback commits the analyst's edit in the window under test, so this fails
+// on an unconditional write every run.
+func TestImportFeed_routeDoesNotClobberAConcurrentLocalEdit(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	s.Worker.DataDir = t.TempDir()
+
+	repo := seedFeedRepo(t, s, "https://github.com/acme/lib", "")
+	remote := publishPeerFeed(t, []interchange.Statement{
+		interchange.NewRoute(interchange.RoutePredicate{
+			Repository: "https://github.com/acme/lib", Channel: "peer@example.com", VerifiedAt: feedTime(t),
+		}),
+	})
+
+	var once sync.Once
+	const callback = "test:analyst_edits_channel_mid_import"
+	if err := s.DB.Callback().Update().Before("gorm:update").Register(callback, func(d *gorm.DB) {
+		if d.Statement.Table != "repositories" {
+			return
+		}
+		once.Do(func() {
+			at := feedTime(t)
+			if err := s.DB.Exec("UPDATE repositories SET disclosure_channel = ?, disclosure_channel_at = ? WHERE id = ?",
+				"analyst@acme.example", at, repo.ID).Error; err != nil {
+				t.Error(err)
+			}
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.DB.Callback().Update().Remove(callback) }()
+
+	if err := s.importFeed(context.Background(), remote, mustRepoIDs(t, s)); err != nil {
+		t.Fatal(err)
+	}
+	var got db.Repository
+	s.DB.First(&got, repo.ID)
+	if got.DisclosureChannel != "analyst@acme.example" {
+		t.Errorf("channel = %q, want the analyst's edit to survive the import", got.DisclosureChannel)
+	}
+	if got.DisclosureChannelAt == nil {
+		t.Error("the analyst's stamp must survive too, or the peer keeps ownership of the channel")
+	}
+	// Losing the write leaves the record open on purpose: the next pass reads
+	// what is actually stored and closes it against that instead of guessing.
+	var row db.InterchangeRecord
+	if err := s.DB.Where("feed = ?", remote).First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.AppliedAt != nil {
+		t.Error("a route that lost the write must stay open for the next pass to decide again")
+	}
+
+	if err := s.importFeed(context.Background(), remote, mustRepoIDs(t, s)); err != nil {
+		t.Fatal(err)
+	}
+	s.DB.First(&got, repo.ID)
+	if got.DisclosureChannel != "analyst@acme.example" {
+		t.Errorf("channel = %q, want the stamped local channel to outrank the peer hint on the retry", got.DisclosureChannel)
+	}
+	var closed db.InterchangeRecord
+	if err := s.DB.First(&closed, row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if closed.AppliedAt == nil {
+		t.Error("the retry must close the record rather than retry it forever")
+	}
+}
+
+// A clean tree over a remote that already carries this clone's HEAD is the
+// no-op case, and a re-clone (fresh data directory, cleared workspace) must
+// reach it too. Reporting no tracking ref there reads as "nothing local has
+// reached the remote" and pushes, logging a publication that never happened.
+func TestFeedClone_freshCloneKnowsTheRemoteAlreadyHasIt(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	s.Worker.DataDir = t.TempDir()
+	remote := initBareRemote(t)
+
+	repo := seedFeedRepo(t, s, "https://github.com/acme/lib", "security@acme.example")
+	seedAudit(t, s, repo.ID, "uuid-clean", "fixed")
+	if err := s.exportFeed(context.Background(), interchange.TierPublic, remote); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(s.Worker.DataDir, "feeds", "public")); err != nil {
+		t.Fatal(err)
+	}
+
+	dir, tracking, err := s.feedClone(context.Background(), "public", remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tracking == "" {
+		t.Fatal("a fresh clone of a populated remote must report the branch's remote-tracking ref")
+	}
+	pushed, err := commitAndPushFeed(context.Background(), dir, tracking, "scrutineer: public feed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pushed {
+		t.Error("a re-cloned feed that already matches the remote must not report a publication")
+	}
+}
+
+// An opt-out stamped against a repository row means that row carries it, so
+// deleting the row has to re-open the record. Otherwise a repository removed
+// and re-added comes back scannable while the peer's request still stands on
+// the feed and in this instance's own archive.
+func TestRepoDelete_reopensTheRecordsAppliedToIt(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	s.Worker.DataDir = t.TempDir()
+
+	repo := seedFeedRepo(t, s, "https://github.com/acme/lib", "")
+	remote := publishPeerFeed(t, []interchange.Statement{
+		interchange.NewOptOut(interchange.OptOutPredicate{
+			Repository: "https://github.com/acme/lib", RequestedAt: feedTime(t), Reason: "please stop",
+		}),
+	})
+	if err := s.importFeed(context.Background(), remote, mustRepoIDs(t, s)); err != nil {
+		t.Fatal(err)
+	}
+	var row db.InterchangeRecord
+	if err := s.DB.Where("feed = ?", remote).First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.AppliedRepositoryID != repo.ID {
+		t.Fatalf("applied_repository_id = %d, want the repository the stamp was written against (%d)", row.AppliedRepositoryID, repo.ID)
+	}
+
+	if _, err := s.deleteRepository(repo); err != nil {
+		t.Fatal(err)
+	}
+	// Reloaded into a fresh struct: First leaves an already-populated pointer
+	// field alone when the column comes back NULL, which is exactly the value
+	// under test here.
+	var reopened db.InterchangeRecord
+	if err := s.DB.First(&reopened, row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if reopened.AppliedAt != nil || reopened.AppliedRepositoryID != 0 {
+		t.Fatalf("deleting the repository must re-open the record, got applied_at %v against repository %d",
+			reopened.AppliedAt, reopened.AppliedRepositoryID)
+	}
+
+	readded := seedFeedRepo(t, s, "https://github.com/acme/lib", "")
+	if err := s.importFeed(context.Background(), remote, mustRepoIDs(t, s)); err != nil {
+		t.Fatal(err)
+	}
+	var got db.Repository
+	s.DB.First(&got, readded.ID)
+	if got.FederationOptOutAt == nil {
+		t.Error("a re-added repository must pick the peer's still-standing opt-out back up")
 	}
 }
 
