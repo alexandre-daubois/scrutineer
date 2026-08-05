@@ -404,6 +404,19 @@ func (f *flags) merge(cfg *config.Config) {
 	}
 }
 
+// applyServerDefaults installs the runtime default model and effort. It warns
+// when a configured default_model is not in the pick list: SetDefaultModel
+// ignores such an id silently, so the default would otherwise become the first
+// pick-list entry with nothing said about it.
+func applyServerDefaults(srv *web.Server, f *flags, log *slog.Logger) {
+	if f.defaultModel != "" && !web.ValidModel(f.defaultModel) {
+		log.Warn("configured default model is not in the pick list; falling back to the first entry",
+			"default_model", f.defaultModel, "model", srv.DefaultModel())
+	}
+	srv.SetDefaultModel(f.defaultModel)
+	srv.SetDefaultEffort(f.effort)
+}
+
 func (f *flags) fullClone() bool { return f.cloneMode == "full" }
 
 // normalizePaths expands a leading ~ in the host-filesystem paths scrutineer
@@ -663,8 +676,7 @@ func run(log *slog.Logger) error {
 	if h, err := worker.HarnessByName(f.backend); err == nil {
 		srv.Backend = worker.HarnessName(h)
 	}
-	srv.SetDefaultModel(f.defaultModel)
-	srv.SetDefaultEffort(f.effort)
+	applyServerDefaults(srv, f, log)
 	srv.FederationSalt = f.federationSalt
 	srv.FederationContact = f.federationContact
 	srv.MonorepoAttribution = f.monorepoAttribution

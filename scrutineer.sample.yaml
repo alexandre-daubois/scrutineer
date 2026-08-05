@@ -190,13 +190,11 @@
 # with the built-in list the tiers are inferred (Sonnet = mid, latest Opus =
 # max).
 # models:
-#   - name: Sonnet 4.6
-#     id:   claude-sonnet-4-6
-#     tier: mid
 #   - name: Sonnet 5.0
 #     id:   claude-sonnet-5
+#     tier: mid
 #   - name: Opus
-#     id:   claude-opus-4-7
+#     id:   claude-opus-5
 #     tier: max
 
 # Pin the default model id. When set, this wins over the "first entry
@@ -204,7 +202,7 @@
 # each tier (mid, high, max) to a configured model. A skill can declare
 # scrutineer.model in SKILL.md metadata as either a tier or exact model,
 # and an explicit per-scan model wins over the skill preference.
-# default_model: claude-sonnet-4-6
+# default_model: claude-sonnet-5
 
 # GitHub organisation the fork skill stages scanned repositories into as
 # private repos. Empty disables the fork skill. Also exposed as

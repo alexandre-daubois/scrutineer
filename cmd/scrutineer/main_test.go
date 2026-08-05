@@ -250,6 +250,31 @@ func TestFlagsMerge_zeroConfigSeedsModelsFromHarness(t *testing.T) {
 	}
 }
 
+func TestApplyServerDefaults_warnsOnModelOutsidePickList(t *testing.T) {
+	saved := web.Models
+	t.Cleanup(func() { web.Models = saved })
+	web.SetModels([]web.Model{{Name: "Opus 5.0", ID: "claude-opus-5"}})
+
+	for _, tc := range []struct {
+		name         string
+		defaultModel string
+		wantWarn     bool
+	}{
+		{"id outside the pick list", "claude-opus-4-7", true},
+		{"id in pick list", "claude-opus-5", false},
+		{"no default configured", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			log := slog.New(slog.NewTextHandler(&out, nil))
+			applyServerDefaults(&web.Server{}, &flags{defaultModel: tc.defaultModel, effort: "high"}, log)
+			if got := strings.Contains(out.String(), "not in the pick list"); got != tc.wantWarn {
+				t.Errorf("warned = %v, want %v; log=%q", got, tc.wantWarn, out.String())
+			}
+		})
+	}
+}
+
 func TestFlagsMerge_modelBaseURLAliasCliWins(t *testing.T) {
 	// The deprecated -anthropic-base-url flag must hold against a yaml
 	// model_base_url the same way the canonical flag does.
