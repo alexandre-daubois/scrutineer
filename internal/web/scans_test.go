@@ -916,6 +916,34 @@ func TestJobs_htmxFragmentKeepsStatusFilter(t *testing.T) {
 	}
 }
 
+// The skill dropdown moved into the fragment with the split, so a refresh that
+// dropped its multi-skill label would silently reword the control the operator
+// is filtering with.
+func TestJobs_htmxFragmentKeepsTheSkillFilterLabel(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+
+	repo := db.Repository{URL: "https://example.com/skill-label", Name: "skill-label"}
+	s.DB.Create(&repo)
+	for _, name := range []string{"alpha", "bravo"} {
+		s.DB.Create(&db.Scan{RepositoryID: repo.ID, Kind: "skill", SkillName: name, Status: db.ScanDone,
+			StatusPriority: db.StatusPriorityFor(db.ScanDone)})
+	}
+
+	r := localReq("GET", "/scans?skill=alpha,bravo")
+	r.Header.Set("HX-Request", "true")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+
+	frag := w.Body.String()
+	if !strings.Contains(frag, "2 skills") {
+		t.Errorf("fragment lost the combined filter label: %s", frag)
+	}
+	if !strings.Contains(frag, `aria-label="Skills: alpha,bravo"`) {
+		t.Errorf("fragment lost the accessible label listing the selected skills: %s", frag)
+	}
+}
+
 // A fragment carries no #toaster, so popping the flash there would swallow the
 // message the full render a POST is redirecting to is about to display.
 // Started is an elapsed time baked in at render time, so the row would read
