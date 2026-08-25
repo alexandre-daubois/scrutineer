@@ -837,7 +837,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: 'The repository maintainer opted out of federated scanning, so no scan may be enqueued for it.'
+          description: 'The repository maintainer opted out of federated scanning, so no scan may be enqueued for it, or a federation peer already holds this finding and an outreach skill was asked to report it.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

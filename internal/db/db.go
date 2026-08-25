@@ -880,7 +880,15 @@ type Finding struct {
 	// produced by the disclose skill but also editable via the finding
 	// form and the PATCH API.
 	SuggestedRecipients string `gorm:"type:text"`
-	Assignee            string `gorm:"index"`
+	// FederationClaimContacts holds the peer contacts returned by the
+	// outbound claim-check that ran when this finding was about to be
+	// reported, comma-joined. Non-empty means at least one federation peer
+	// already holds the same finding and the attempt was refused so the
+	// analyst coordinates first; a recorded claim is also the
+	// acknowledgement, so the next attempt goes through and clears it.
+	FederationClaimContacts string
+	FederationClaimAt       *time.Time
+	Assignee                string `gorm:"index"`
 	// LastRevalidateVerdict caches the latest verdict from the
 	// revalidate skill (true_positive | false_positive | already_fixed
 	// | uncertain; empty when revalidate has not run) so the audit

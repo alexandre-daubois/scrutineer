@@ -482,7 +482,7 @@ func (s *Server) apiRunFindingSkill(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusNotFound, err.Error())
 			return
 		}
-		if errors.Is(err, ErrRepoFederationOptOut) {
+		if errors.Is(err, ErrRepoFederationOptOut) || errors.Is(err, ErrFederationClaimPending) {
 			writeAPIError(w, http.StatusConflict, err.Error())
 			return
 		}

@@ -3,10 +3,9 @@
 Scrutineer instances (and non-scrutineer tools) can exchange a small set of
 federation records without ever exchanging finding bodies. This page documents
 the record envelope, the shipped JSON schema, the on-disk record layout, the
-salted finding hash, the claim-check endpoint, and the two feed tiers with the
-export and import jobs that keep them in sync. Asking peers before reporting,
-and Sigstore signing for the public tier, are future work and not described
-here.
+salted finding hash, the claim-check endpoint in both directions, and the two
+feed tiers with the export and import jobs that keep them in sync. Sigstore
+signing for the public tier is future work and not described here.
 
 ## Records
 
@@ -141,6 +140,55 @@ The hash set is cached for up to a minute so request floods cost map lookups
 rather than a findings-table scan each time; a match may therefore lag a
 freshly written finding by that long.
 
+## Asking peers before reporting
+
+The other direction of the same endpoint: before this instance reports a
+finding, every peer in `federation_peers` is asked with that finding's salted
+hash. A peer that answers with a match means two instances are about to
+report the same issue separately, so the attempt is refused, the matching
+peers and their contacts are recorded on the finding
+(`federation_claim_contacts`), and the finding page names them. A recorded
+claim *is* the acknowledgement: the analyst has seen who to coordinate with,
+so the next attempt goes through. The record is cleared by the status write
+itself, in the same transaction, so the paths that report without an analyst
+click (an outreach skill PATCHing the status, the worker) clear the banner too.
+
+Every way of reporting is covered, and each is checked before any outreach
+happens rather than after:
+
+- the analyst marking a finding `reported` by hand, gated in the status
+  handler;
+- the CERT/CC VINCE submission, gated after the form's own validation and
+  before the request that files the report;
+- `report-upstream` and `public-issue`, gated when the skill is *enqueued*.
+  Those two file with the maintainer (or open the public issue) and only then
+  PATCH the status themselves, so gating their status write would leave the
+  outreach done and the finding stuck.
+
+The scan-scoped `PATCH /api/v1/findings/{id}` is deliberately not gated: by
+the time a skill reaches it the report is already filed, and the enqueue gate
+above is what stops that skill from starting.
+
+The two exclusions the feeds apply hold here too: an opted-out repository is
+never the subject of a question to a peer, since contacting them about it is
+what the maintainer asked to stop, and neither is a local (`file://`) one,
+whose hash is derived from a path on the operator's own filesystem.
+
+A peer that errors, times out, or answers `404` is not a claim: a peer being
+down must not stop an analyst from reporting. The whole round is bounded by
+five seconds because it sits inside a click, and the peers are asked
+concurrently so one hanging peer cannot eat the budget and hide a claim the
+next one would have answered. A *local* failure is different and refuses the
+attempt: the hash needs this instance's own repository row, and answering
+"nobody claims it" because the database was busy would silently open the gate.
+
+The client refuses redirects. A claim-check answer is a boolean and a
+contact, so it never legitimately redirects, and following one would let a
+peer aim this instance's own POST anywhere: a `307` to
+`http://127.0.0.1:8080/repositories/1/delete` would replay the request
+against the admin UI, whose only authorization is the loopback `Host` check
+and a `Sec-Fetch-Site` check that a redirected Go request satisfies.
+
 ## Feeds
 
 Each tier is a git remote serving one record set in the layout above:
@@ -245,12 +293,14 @@ federation_public_feed: "git@github.com:example/scrutineer-public-feed.git"
 federation_members_feed: "git@github.com:example/scrutineer-members-feed.git"
 federation_import_feeds:
   - "https://github.com/peer/scrutineer-public-feed.git"
+federation_peers:
+  - "https://peer.example.com"
 ```
 
 Everything defaults to empty, and each part switches on independently: an
-empty salt disables the claim-check endpoint, while the feeds are driven by
-their own remotes and run without a salt, since no feed record carries a
-finding hash. Startup refuses a salt without a contact. The salt is
+empty salt disables the claim-check endpoint in both directions, while the
+feeds are driven by their own remotes and run without a salt, since no feed
+record carries a finding hash. Startup refuses a salt without a contact. The salt is
 deliberately config-file only (no CLI flag): a secret in argv leaks via `ps`
 and shell history. The contact may also be set with `-federation-contact`,
 and the two feed remotes with `-federation-public-feed` /
@@ -258,13 +308,15 @@ and the two feed remotes with `-federation-public-feed` /
 repeatable flag would duplicate what a YAML sequence already expresses.
 
 Startup also refuses `federation_members_feed` without `recipients_file` and
-at least one decryption source from `identity_file` or `identity_plugins`, the
-two tiers sharing one git remote (each would prune what the other publishes),
-and any feed remote carrying credentials: the remote reaches the job's error
-messages and log fields, so a token in one would end up in the logs. Configure
-a git credential helper on the host instead. The refusal itself names the
-remote with its userinfo replaced, since that message is what the startup
-logger prints.
+at least one decryption source from `identity_file` or `identity_plugins`,
+`federation_peers` without `federation_salt` (the hash sent to a peer could
+never match theirs), any peer that is not an `http(s)` URL with a host and
+nothing else, the two tiers sharing one git remote (each would prune what the
+other publishes), and any feed remote or peer carrying credentials: those
+strings reach the job's error messages and log fields, so a token in one would
+end up in the logs. Configure a git credential helper on the host instead. The
+refusal itself names the remote with its userinfo replaced, since that message
+is what the startup logger prints.
 
 Federation runs once immediately at startup and then hourly. When an encrypted
 members feed uses `identity_plugins`, either the read-back check for an export

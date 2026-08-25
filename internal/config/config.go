@@ -208,6 +208,10 @@ type Config struct {
 	// FederationImportFeeds are peer feed git remotes cloned read-only and
 	// ingested by the import job.
 	FederationImportFeeds []string `yaml:"federation_import_feeds"`
+	// FederationPeers are peer base URLs asked over POST /claim-check
+	// before this instance reports a finding. Requires FederationSalt:
+	// without the shared salt the hash sent to a peer cannot match theirs.
+	FederationPeers []string `yaml:"federation_peers"`
 }
 
 // Opencode groups settings that apply only to the OpenCode backend.

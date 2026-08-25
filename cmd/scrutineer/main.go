@@ -135,6 +135,7 @@ type flags struct {
 	federationPublicFeed  string
 	federationMembersFeed string
 	federationImportFeeds []string
+	federationPeers       []string
 	subprojectScope       string
 	monorepoAttribution   bool
 	skillLocal            skillDirs
@@ -166,8 +167,26 @@ func validateFederation(f *flags) error {
 		}
 	}
 	f.federationImportFeeds = imports
+	// Peers are trimmed in place for the same reason: ValidatePeerURL parses a
+	// trimmed copy, so an untrimmed entry would pass validation and then be
+	// joined with /claim-check into a URL no request can be built from.
+	var peers []string
+	for _, peer := range f.federationPeers {
+		if peer = strings.TrimSpace(peer); peer != "" {
+			peers = append(peers, peer)
+		}
+	}
+	f.federationPeers = peers
 	if f.federationSalt != "" && f.federationContact == "" {
 		return errors.New("federation: federation_contact is required when federation_salt is set")
+	}
+	if len(f.federationPeers) > 0 && f.federationSalt == "" {
+		return errors.New("federation: federation_salt is required when federation_peers is set")
+	}
+	for _, peer := range f.federationPeers {
+		if err := web.ValidatePeerURL(peer); err != nil {
+			return err
+		}
 	}
 	if f.federationMembersFeed != "" &&
 		(f.recipientsFile == "" || (f.identityFile == "" && len(f.identityPlugins) == 0)) {
@@ -204,6 +223,7 @@ func (f *flags) mergeFederation(cfg *config.Config) {
 		f.federationMembersFeed = cfg.FederationMembersFeed
 	}
 	f.federationImportFeeds = cfg.FederationImportFeeds
+	f.federationPeers = cfg.FederationPeers
 }
 
 func parseFlags() *flags {
@@ -685,6 +705,7 @@ func run(log *slog.Logger) error {
 	srv.FederationPublicFeed = f.federationPublicFeed
 	srv.FederationMembersFeed = f.federationMembersFeed
 	srv.FederationImportFeeds = f.federationImportFeeds
+	srv.FederationPeers = f.federationPeers
 
 	if err := configureEncryption(srv, f, log); err != nil {
 		return err

@@ -321,3 +321,9 @@
 # fills a disclosure channel this instance does not have.
 # federation_import_feeds:
 #   - "https://github.com/peer/scrutineer-public-feed.git"
+
+# Peer base URLs asked over POST /claim-check before this instance reports a
+# finding. A match refuses the attempt and names the peer's contact so you
+# coordinate first; the next attempt goes through. Requires federation_salt.
+# federation_peers:
+#   - "https://peer.example.com"

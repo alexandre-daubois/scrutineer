@@ -54,6 +54,16 @@ var ErrSkillProfileMismatch = errors.New("skill requires a different runner prof
 // fan-out and every button on the repo page.
 var ErrRepoFederationOptOut = errors.New("repository maintainer opted out of federated scanning")
 
+// ErrFederationClaimPending is returned by enqueueSkillWith when an
+// outreach skill is asked to run on a finding a federation peer also holds.
+// See refuseClaimedOutreach for why the check sits at enqueue.
+var ErrFederationClaimPending = errors.New("a federation peer already holds this finding; coordinate before reporting")
+
+// outreachSkills contact someone outside this instance about a finding and
+// mark it reported themselves, so they are the automated half of what the
+// outbound claim-check exists to deduplicate.
+var outreachSkills = map[string]bool{reportUpstreamSkillName: true, publicIssueSkillName: true}
+
 // ErrInvalidRef is returned by enqueueSkillWith when opts.Ref fails the
 // shared ref-charset validation. Mirrors ErrSkillProfileMismatch so the
 // API path rejects a bad ref at the boundary (400) instead of enqueueing
@@ -126,11 +136,14 @@ type Server struct {
 	vinceSubmitMu   sync.Mutex
 	// FederationPublicFeed and FederationMembersFeed are the git remotes
 	// the export job pushes each tier to; FederationImportFeeds are the
-	// peer remotes the import job pulls. All three empty leaves the
-	// federation job dormant. See docs/interchange.md.
+	// peer remotes the import job pulls; all three empty leaves the
+	// federation job dormant. FederationPeers are peer base URLs asked over
+	// POST /claim-check before this instance reports a finding. See
+	// docs/interchange.md.
 	FederationPublicFeed  string
 	FederationMembersFeed string
 	FederationImportFeeds []string
+	FederationPeers       []string
 
 	// resolvePURL maps a Package URL to its source repository URL via
 	// packages.ecosyste.ms. Field rather than direct call so tests can
@@ -1522,6 +1535,12 @@ func (s *Server) findingStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "a saved disclosure draft is required before marking ready", http.StatusUnprocessableEntity)
 		return
 	}
+	// Nothing to ask a peer when the finding is already reported: the outreach
+	// this gates has happened, and a claim recorded on a no-op transition would
+	// never be cleared.
+	if status == db.FindingReported && f.Status != db.FindingReported && !s.federationClaimGate(w, r, f) {
+		return
+	}
 	switch status {
 	case db.FindingNew, db.FindingEnriched, db.FindingTriaged, db.FindingReady,
 		db.FindingReported, db.FindingAcknowledged, db.FindingFixed, db.FindingPublished,
@@ -1576,6 +1595,10 @@ const discloseSkillName = "disclose"
 
 // publicIssueSkillName is the skill the File public issue button runs.
 const publicIssueSkillName = "public-issue"
+
+// reportUpstreamSkillName is the skill that files a finding with the
+// maintainer through GitHub's private vulnerability reporting.
+const reportUpstreamSkillName = "report-upstream"
 
 // patchSkillName is the skill the Propose patch button runs.
 const patchSkillName = "patch"
@@ -1639,6 +1662,13 @@ func (s *Server) runFindingSkill(w http.ResponseWriter, r *http.Request, name st
 	}
 	opts.FindingID = new(f.ID)
 	scanID, err := s.enqueueSkillWith(r.Context(), scan.RepositoryID, skill.ID, opts)
+	if errors.Is(err, ErrFederationClaimPending) {
+		// The claim is now recorded on the finding, so the page shows who to
+		// coordinate with and running the skill again goes through.
+		setFlash(w, Flash{Category: warningKey, Title: "A federation peer already holds this finding"})
+		s.redirect(w, r, fmt.Sprintf("/findings/%d", f.ID))
+		return
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -3288,6 +3318,9 @@ func (s *Server) enqueueSkillWith(ctx context.Context, repoID, skillID uint, opt
 		if err != nil {
 			return 0, fmt.Errorf("encode scan focus area: %w", err)
 		}
+	}
+	if err := s.refuseClaimedOutreach(ctx, opts, sk, hasSkill); err != nil {
+		return 0, err
 	}
 	if !ValidModelPreference(opts.Model) && hasSkill {
 		opts.Model = sk.Model

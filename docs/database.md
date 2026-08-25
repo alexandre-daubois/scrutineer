@@ -237,6 +237,8 @@ One row per vulnerability. Lifecycle columns are mutated through `db.WriteFindin
 | resolution | text | `fix`, `migrate`, `workaround`, `adopt`, `wontfix`. |
 | disclosure_draft | text | Draft advisory text. |
 | suggested_recipients | text | File-level owners for the finding's `location`: CODEOWNERS entries or, absent those, recent non-bot committers. Comma-joined free text with provenance. Usually produced by the `disclose` skill, but also editable via the finding form and the PATCH API. |
+| federation_claim_contacts | text | Peers that answered the outbound claim-check with a match when this finding was about to be reported, comma-joined as `<peer> (<contact>)`. Non-empty means the attempt was refused so the analyst coordinates first, and is itself the acknowledgement: the next attempt goes through. Cleared once the finding reaches `reported`. See [interchange.md](interchange.md). |
+| federation_claim_at | datetime | When that claim-check ran. Cleared with `federation_claim_contacts`. |
 | assignee | text | Free-text. |
 | suggested_fix | text | Unified diff from the `patch` skill that passed the applicability gate. Empty when no patch run or the gate rejected it. |
 | suggested_fix_commit | text | Sha the suggested_fix applies cleanly against. |
