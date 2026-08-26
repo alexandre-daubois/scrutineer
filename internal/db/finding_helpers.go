@@ -89,7 +89,8 @@ func WriteFindingField(gdb *gorm.DB, findingID uint, field, newValue string, sou
 		// their purpose. Cleared here rather than in each caller because the
 		// analyst's transition, the VINCE submission, an outreach skill's PATCH
 		// and the worker all write the status through this one function.
-		if field == "status" && FindingLifecycle(newValue) == FindingReported {
+		if field == "status" && FindingLifecycle(newValue) == FindingReported &&
+			(f.FederationClaimContacts != "" || f.FederationClaimAt != nil) {
 			if err := tx.Model(&Finding{}).Where("id = ?", f.ID).Updates(map[string]any{
 				"federation_claim_contacts": "",
 				"federation_claim_at":       nil,

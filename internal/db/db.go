@@ -886,7 +886,7 @@ type Finding struct {
 	// already holds the same finding and the attempt was refused so the
 	// analyst coordinates first; a recorded claim is also the
 	// acknowledgement, so the next attempt goes through and clears it.
-	FederationClaimContacts string
+	FederationClaimContacts string `gorm:"type:text"`
 	FederationClaimAt       *time.Time
 	Assignee                string `gorm:"index"`
 	// LastRevalidateVerdict caches the latest verdict from the

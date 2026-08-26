@@ -325,9 +325,8 @@ func TestFindingStatus_gateOnlyAppliesToReported(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
 	s.FederationSalt = testFederationSalt
-	// A peer that would claim anything: other transitions must not consult
-	// it at all, so they go through regardless.
-	s.FederationPeers = []string{peerServer(t, http.StatusOK, `{"match":true,"contact":"peer@example.com"}`)}
+	peer, asked := countingPeerServer(t)
+	s.FederationPeers = []string{peer}
 	f := seedReadyFinding(t, s)
 
 	if w := postFindingStatus(t, s, f.ID, url.Values{statusKey: {"rejected"}}); w.Code >= 400 {
@@ -335,6 +334,45 @@ func TestFindingStatus_gateOnlyAppliesToReported(t *testing.T) {
 	}
 	if got := reloadFinding(t, s, f.ID); got.Status != db.FindingRejected {
 		t.Fatalf("status = %q, want rejected", got.Status)
+	}
+	if asked.Load() != 0 {
+		t.Errorf("a transition that reports nothing asked the peers %d times", asked.Load())
+	}
+}
+
+// The enqueue gate is the mirror of the status handler's: a finding no first
+// report can follow has nothing left to deduplicate, and both outreach skills
+// stand down on those statuses themselves, so a claim recorded here would
+// never be cleared.
+func TestEnqueueOutreachSkill_notGatedWhenNoFirstReportCanFollow(t *testing.T) {
+	for _, status := range []db.FindingLifecycle{
+		db.FindingReported, db.FindingAcknowledged, db.FindingFixed,
+		db.FindingPublished, db.FindingRejected, db.FindingDuplicate,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			s, done := newTestServer(t)
+			defer done()
+			s.FederationSalt = testFederationSalt
+			peer, asked := countingPeerServer(t)
+			s.FederationPeers = []string{peer}
+			f := seedReadyFinding(t, s)
+			if err := s.DB.Model(&db.Finding{}).Where("id = ?", f.ID).
+				Update("status", status).Error; err != nil {
+				t.Fatal(err)
+			}
+			skill := db.Skill{Name: "report-upstream", Active: true}
+			s.DB.Create(&skill)
+
+			if _, err := s.enqueueSkillScoped(t.Context(), f.RepositoryID, skill.ID, &f.ID, ""); err != nil {
+				t.Fatalf("enqueue on a %q finding must not be gated: %v", status, err)
+			}
+			if asked.Load() != 0 {
+				t.Errorf("peers asked %d times about a %q finding", asked.Load(), status)
+			}
+			if got := reloadFinding(t, s, f.ID); got.FederationClaimContacts != "" {
+				t.Errorf("a claim was recorded that nothing would ever clear: %q", got.FederationClaimContacts)
+			}
+		})
 	}
 }
 

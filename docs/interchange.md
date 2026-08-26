@@ -153,8 +153,8 @@ so the next attempt goes through. The record is cleared by the status write
 itself, in the same transaction, so the paths that report without an analyst
 click (an outreach skill PATCHing the status, the worker) clear the banner too.
 
-Every way of reporting is covered, and each is checked before any outreach
-happens rather than after:
+Every way of asking for a report is covered, and each is checked before any
+outreach happens rather than after:
 
 - the analyst marking a finding `reported` by hand, gated in the status
   handler;
@@ -167,7 +167,13 @@ happens rather than after:
 
 The scan-scoped `PATCH /api/v1/findings/{id}` is deliberately not gated: by
 the time a skill reaches it the report is already filed, and the enqueue gate
-above is what stops that skill from starting.
+above is what stops that skill from starting. That leaves one window open: a
+`report-upstream` or `public-issue` scan already queued (or paused and later
+resumed) is not asked again when it is dispatched, so a claim a peer publishes
+between the enqueue and the run is missed. Unlike an opt-out, which the worker
+re-checks as it claims the row, the peer answer needs the network and has no
+place to put the analyst's acknowledgement from inside a worker, so the check
+stays at the moment someone asks for the outreach.
 
 The two exclusions the feeds apply hold here too: an opted-out repository is
 never the subject of a question to a peer, since contacting them about it is

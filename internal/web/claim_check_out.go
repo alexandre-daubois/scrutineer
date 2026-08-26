@@ -210,9 +210,18 @@ func (s *Server) refuseClaimedOutreach(ctx context.Context, opts ScanOpts, sk db
 		return nil
 	}
 	var f db.Finding
-	if err := s.DB.Select("id, repository_id, sub_path, location, cwe, federation_claim_contacts").
+	if err := s.DB.Select("id, repository_id, sub_path, location, cwe, status, federation_claim_contacts").
 		First(&f, *opts.FindingID).Error; err != nil {
 		return err
+	}
+	// Peers are asked only while a first report is still ahead. Past that, or
+	// once the finding is closed, both skills stand down on their own and a
+	// claim recorded here would outlive every clear, since the status write
+	// that drops it only fires on a change. Spelled as the set to skip rather
+	// than the set to gate so a lifecycle value added later is asked about
+	// rather than silently exempted.
+	if f.Status.Closed() || f.Status == db.FindingReported || f.Status == db.FindingAcknowledged {
+		return nil
 	}
 	claims, err := s.claimPeerHold(ctx, f)
 	if err != nil {
