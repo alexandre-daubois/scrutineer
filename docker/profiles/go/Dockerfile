@@ -34,12 +34,12 @@ FROM ${RUNNER_IMAGE}
 # Explicit, sha256-verifiable Go version. Bump GO_VERSION and both
 # checksums together; the content-addressed image tag invalidates the
 # cache on any edit to this file.
-ARG GO_VERSION=1.26.4
-ARG GO_SHA256_AMD64=1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f
-ARG GO_SHA256_ARM64=ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768
+ARG GO_VERSION=1.27.0
+ARG GO_SHA256_AMD64=675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685
+ARG GO_SHA256_ARM64=51798d2c42d0e1c6ed7fd9f48728b4193abac9e8aad6dbac2fe96a81f5909bda
 # govulncheck reports known vulns in the project's module graph and (with
 # source) which are actually reachable. Pinned; built from source below.
-ARG GOVULNCHECK_VERSION=v1.4.0
+ARG GOVULNCHECK_VERSION=v1.7.0
 
 USER root
 
