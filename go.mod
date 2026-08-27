@@ -8,7 +8,7 @@ require (
 	filippo.io/age v1.3.1
 	github.com/alpha-omega-security/harness v0.1.10
 	github.com/ecosyste-ms/ecosystems-go v0.4.0
-	github.com/git-pkgs/clone v0.5.0
+	github.com/git-pkgs/clone v0.7.0
 	github.com/git-pkgs/clone/gogit v0.1.0
 	github.com/git-pkgs/cwe v0.1.1
 	github.com/git-pkgs/enrichment v0.7.0
@@ -37,7 +37,7 @@ require (
 	github.com/cyphar/filepath-securejoin v0.7.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/git-pkgs/packageurl-go v0.3.1 // indirect
-	github.com/git-pkgs/registries v0.8.0 // indirect
+	github.com/git-pkgs/registries v0.8.1 // indirect
 	github.com/git-pkgs/spdx v0.3.1 // indirect
 	github.com/git-pkgs/vers v0.6.0 // indirect
 	github.com/github/go-spdx/v2 v2.7.0 // indirect
@@ -54,7 +54,7 @@ require (
 	github.com/oapi-codegen/nullable v1.2.0 // indirect
 	github.com/oapi-codegen/runtime v1.7.0 // indirect
 	github.com/package-url/packageurl-go v0.1.6 // indirect
-	github.com/pandatix/go-cvss v0.6.2 // indirect
+	github.com/pandatix/go-cvss v0.6.4 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/net v0.58.0 // indirect

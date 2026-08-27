@@ -26,6 +26,7 @@ const (
 	schemaRepairMaxTurns      = 4
 	schemaRepairReportMaxSize = 4000
 	deepDiveSkillName         = "security-deep-dive"
+	embeddedNativeSkillName   = "embedded-native"
 	refusalAuditSkillName     = deepDiveSkillName
 	refusalAuditOutputFile    = "refusal_audit.json"
 	refusalAuditMaxTurns      = 3
@@ -179,7 +180,9 @@ func (w *Worker) doSkill(ctx context.Context, scan *db.Scan, emit func(Event)) (
 		scan.Commit = gitHead(filepath.Join(workRoot, "src"))
 	} else {
 		w.prepareNoveltyHistory(ctx, scan, &skill)
-		cacheCommit, err := w.PrepareSrc(ctx, scan.Repository.URL, scan.Ref, workRoot, emit)
+		cacheCommit, err := w.prepareSkillRepoSrc(
+			ctx, scan.Repository.URL, scan.Ref, workRoot, skill.RecurseSubmodules, emit,
+		)
 		if err != nil {
 			if report, ok := w.handleCloneError(scan, err, emit); ok {
 				return report, nil
@@ -188,6 +191,11 @@ func (w *Worker) doSkill(ctx context.Context, scan *db.Scan, emit func(Event)) (
 		}
 		scan.Commit = cacheCommit
 		w.clearCloneError(scan)
+	}
+	if skill.Name == embeddedNativeSkillName {
+		if err := stageEmbeddedNativeComponents(ctx, workRoot, scan.SubPath); err != nil {
+			return "", err
+		}
 	}
 	hardScope, err := w.prepareSkillSource(ctx, workRoot, scan, &skill, emit)
 	if err != nil {

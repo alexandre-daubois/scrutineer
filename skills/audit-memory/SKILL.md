@@ -2,7 +2,7 @@
 name: audit-memory
 description: Focused static audit for reachable memory corruption in first-party C, C++, unsafe Rust, native extensions, and FFI boundaries.
 license: MIT
-compatibility: Static and read-only. Needs source in ./src. Reads bundled reference notes in ./references. Does not build, run, install dependencies, or use external network; the worker-provided Scrutineer API at api_base is allowed.
+compatibility: Static and read-only. Needs source in ./src, including initialized Git submodules when available. Reads bundled reference notes in ./references. Does not build, run, install dependencies, or use external network; the worker-provided Scrutineer API at api_base is allowed.
 allowed-tools: Read,Write,Bash,Grep,Glob
 metadata:
   scrutineer.version: 1
@@ -11,14 +11,13 @@ metadata:
   scrutineer.max_turns: 48
   scrutineer.model: high
   scrutineer.min_confidence: high
+  scrutineer.recurse_submodules: true
+  scrutineer.requires:
+    - embedded-native
   scrutineer.paths:
     - "**"
   scrutineer.ignore_paths:
     - "**/node_modules/**"
-    - "**/vendor/**"
-    - "**/third_party/**"
-    - "**/third-party/**"
-    - "**/external/**"
     - "**/build/**"
     - "**/cmake-build-*/**"
     - "**/target/**"
@@ -54,9 +53,11 @@ Scrutineer API at api_base is allowed when present.
 
 If scan_subpath is set, audit only ./src/{scan_subpath} and report locations
 relative to that scoped root. The worker has already removed scan_config.skip
-paths and this skill's ignored generated or vendored trees from the staged
-source. Read first-party tests, build files, headers, manifests, and docs when
-they define ownership, supported configurations, or trust boundaries.
+paths and this skill's ignored build-output and dependency-cache trees from the
+staged source; vendored, third-party, and submodule trees are staged for
+classification below. Read first-party tests, build files, headers, manifests,
+and docs when they define ownership, supported configurations, or trust
+boundaries.
 
 ## Existing findings
 
@@ -68,6 +69,20 @@ When api_base, token, and repository_id are present in context.json, fetch:
 Use the response to avoid filing the same root cause at the same affected
 location twice. An API failure must not stop source review and is not evidence
 that no prior finding exists.
+
+Also fetch the latest compatible native source map:
+
+    GET {api_base}/repositories/{repository_id}/scans?skill=embedded-native&status=done
+
+Fetch the selected scan by id and parse its `report`. Match the current scan
+ref and subpath. Use the root and submodule Brief reports to identify native
+languages, extension bridges, FFI boundaries, build tools, manifests, and
+dependencies before enumerating primitives. Join each submodule report to
+`components[]` by its path relative to the root report path, and use the pinned
+`purl` and resolved `url` for dependency identity and attribution. Leave
+identity unresolved when an older report omits `components`. Treat unavailable
+components, identity errors, and an error-only report as coverage gaps and
+continue from the checkout.
 
 ## Reference routing
 
@@ -109,6 +124,17 @@ a local file. State the actual attacker and deployment precondition.
 
 Read build manifests and feature flags. Review supported non-default variants
 only when repository evidence shows they are shipped or security-relevant.
+
+Classify native code under `vendor/`, `third_party/`, `external/`, and Git
+submodules before reviewing it. Directory names do not establish ownership.
+Modified vendored code and same-project submodule code are first-party. For an
+unmodified third-party component, inspect its host bridge and public native
+entry points only far enough to establish linkage and reachability, then
+exclude its internal primitive sites from the host audit. A defect located
+inside a separate submodule repository belongs to that repository. Do not file
+it against the host with a location that exists only behind a gitlink. Host
+wrappers, size conversions, ownership transfers, feature selection, and
+missing guards remain in scope.
 
 ### 2. Discover wrappers before primitives
 
