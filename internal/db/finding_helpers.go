@@ -84,13 +84,14 @@ func WriteFindingField(gdb *gorm.DB, findingID uint, field, newValue string, sou
 		}).Error; err != nil {
 			return err
 		}
-		// A finding that reached reported has had its outbound claim-check
-		// acknowledged, so the contacts recorded for the banner have served
-		// their purpose. Cleared here rather than in each caller because the
-		// analyst's transition, the VINCE submission, an outreach skill's PATCH
-		// and the worker all write the status through this one function.
-		if field == "status" && FindingLifecycle(newValue) == FindingReported &&
-			(f.FederationClaimContacts != "" || f.FederationClaimAt != nil) {
+		// Any status change retires the contacts recorded for the banner: on
+		// reported the outbound claim-check has been acknowledged, and on
+		// rejected or duplicate the coordination is over, so a claim left
+		// behind would stand in for a fresh check if the finding were reopened
+		// and reported later. Cleared here rather than in each caller because
+		// the analyst's transition, the VINCE submission, an outreach skill's
+		// PATCH and the worker all write the status through this one function.
+		if field == "status" && (f.FederationClaimContacts != "" || f.FederationClaimAt != nil) {
 			if err := tx.Model(&Finding{}).Where("id = ?", f.ID).Updates(map[string]any{
 				"federation_claim_contacts": "",
 				"federation_claim_at":       nil,

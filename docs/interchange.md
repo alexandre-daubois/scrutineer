@@ -149,9 +149,11 @@ report the same issue separately, so the attempt is refused, the matching
 peers and their contacts are recorded on the finding
 (`federation_claim_contacts`), and the finding page names them. A recorded
 claim *is* the acknowledgement: the analyst has seen who to coordinate with,
-so the next attempt goes through. The record is cleared by the status write
-itself, in the same transaction, so the paths that report without an analyst
-click (an outreach skill PATCHing the status, the worker) clear the banner too.
+so the next attempt goes through. Any status change clears the record, in the
+same transaction as the status write, so the paths that report without an
+analyst click (an outreach skill PATCHing the status, the worker) clear the
+banner too, and a finding rejected rather than reported is asked about again if
+it is reopened instead of going through on the old claim.
 
 Every way of asking for a report is covered, and each is checked before any
 outreach happens rather than after:

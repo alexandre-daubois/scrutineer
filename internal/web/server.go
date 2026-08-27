@@ -1536,8 +1536,8 @@ func (s *Server) findingStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Nothing to ask a peer when the finding is already reported: the outreach
-	// this gates has happened, and a claim recorded on a no-op transition would
-	// never be cleared.
+	// this gates has happened, and a no-op transition writes nothing, so it
+	// would leave the claim it just recorded standing.
 	if status == db.FindingReported && f.Status != db.FindingReported && !s.federationClaimGate(w, r, f) {
 		return
 	}

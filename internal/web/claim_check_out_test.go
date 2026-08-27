@@ -533,7 +533,7 @@ func TestPeerClaims_oneHangingPeerDoesNotHideAnother(t *testing.T) {
 	}
 	f := seedReadyFinding(t, s)
 
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 	claims, err := s.peerClaims(ctx, f)
 	if err != nil {
@@ -544,26 +544,94 @@ func TestPeerClaims_oneHangingPeerDoesNotHideAnother(t *testing.T) {
 	}
 }
 
-// Clearing lives in WriteFindingField, so the paths that report without going
-// through the status handler (an outreach skill's PATCH, the worker) clear the
-// banner too.
-func TestWriteFindingStatus_reportedClearsTheClaim(t *testing.T) {
-	s, done := newTestServer(t)
-	defer done()
-	f := seedReadyFinding(t, s)
+func recordClaim(t *testing.T, s *Server, id uint) {
+	t.Helper()
 	claimedAt := time.Now().UTC()
-	if err := s.DB.Model(&db.Finding{}).Where("id = ?", f.ID).Updates(map[string]any{
+	if err := s.DB.Model(&db.Finding{}).Where("id = ?", id).Updates(map[string]any{
 		"federation_claim_contacts": "https://peer.example.com (peer@example.com)",
 		"federation_claim_at":       &claimedAt,
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
+}
 
-	if err := db.WriteFindingField(s.DB, f.ID, statusKey, string(db.FindingReported), db.SourceSystem, "report-upstream"); err != nil {
+// Clearing lives in WriteFindingField, so the paths that report without going
+// through the status handler (an outreach skill's PATCH, the worker) clear the
+// banner too. Every status change clears, not just the one to reported: the
+// coordination the contacts describe belongs to the transition they were
+// recorded for.
+func TestWriteFindingStatus_anyChangeClearsTheClaim(t *testing.T) {
+	for _, status := range []db.FindingLifecycle{db.FindingReported, db.FindingRejected, db.FindingDuplicate, db.FindingTriaged} {
+		t.Run(string(status), func(t *testing.T) {
+			s, done := newTestServer(t)
+			defer done()
+			f := seedReadyFinding(t, s)
+			recordClaim(t, s, f.ID)
+
+			if err := db.WriteFindingField(s.DB, f.ID, statusKey, string(status), db.SourceSystem, "report-upstream"); err != nil {
+				t.Fatal(err)
+			}
+			got := reloadFinding(t, s, f.ID)
+			if got.FederationClaimContacts != "" || got.FederationClaimAt != nil {
+				t.Errorf("claim survived the move to %s: %q / %v", status, got.FederationClaimContacts, got.FederationClaimAt)
+			}
+		})
+	}
+}
+
+// A write that is not the status leaves the claim alone: the banner has to
+// stay up while the analyst edits the finding and coordinates with the peer.
+func TestWriteFindingField_nonStatusWriteKeepsTheClaim(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	f := seedReadyFinding(t, s)
+	recordClaim(t, s, f.ID)
+
+	if err := db.WriteFindingField(s.DB, f.ID, "assignee", "alice", db.SourceSystem, "test"); err != nil {
 		t.Fatal(err)
 	}
 	got := reloadFinding(t, s, f.ID)
-	if got.FederationClaimContacts != "" || got.FederationClaimAt != nil {
-		t.Errorf("claim survived the report: %q / %v", got.FederationClaimContacts, got.FederationClaimAt)
+	if got.FederationClaimContacts == "" || got.FederationClaimAt == nil {
+		t.Errorf("claim cleared by an unrelated field: %q / %v", got.FederationClaimContacts, got.FederationClaimAt)
+	}
+}
+
+// The claim is an acknowledgement of one coordination round, so a finding
+// rejected rather than reported and later reopened is asked about again
+// instead of the old contacts reading as a standing acknowledgement.
+func TestClaimPeerHold_reopenedAfterRejectAsksPeersAgain(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	s.FederationSalt = testFederationSalt
+	var asked atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asked.Add(1)
+		_, _ = io.WriteString(w, `{"match":true,"contact":"peer@example.com"}`)
+	}))
+	defer srv.Close()
+	s.FederationPeers = []string{srv.URL}
+	f := seedReadyFinding(t, s)
+
+	claims, err := s.claimPeerHold(t.Context(), f)
+	if err != nil {
+		t.Fatalf("claimPeerHold: %v", err)
+	}
+	if claims == "" {
+		t.Fatal("first round recorded no claim")
+	}
+	for _, status := range []db.FindingLifecycle{db.FindingRejected, db.FindingReady} {
+		if err := db.WriteFindingField(s.DB, f.ID, statusKey, string(status), db.SourceSystem, "analyst"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if claims, err = s.claimPeerHold(t.Context(), reloadFinding(t, s, f.ID)); err != nil {
+		t.Fatalf("claimPeerHold after reopen: %v", err)
+	}
+	if claims == "" {
+		t.Error("the reopened finding went through on the rejected round's claim")
+	}
+	if asked.Load() != 2 {
+		t.Errorf("peer asked %d times, want one round per report attempt", asked.Load())
 	}
 }
