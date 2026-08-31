@@ -29,6 +29,11 @@
       "items": { "type": "integer", "minimum": 1 },
       "description": "Finding ids that had a verify run enqueued."
     },
+    "release_watch": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1 },
+      "description": "Finding ids that had a release-watch run enqueued."
+    },
     "errors": {
       "type": "array",
       "items": { "type": "string" },

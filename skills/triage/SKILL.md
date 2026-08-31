@@ -111,7 +111,7 @@ Do not verify findings in `new`, `enriched`, `triaged`, `ready`, `published`, `r
 
 ## Watch fixed findings for an upstream release
 
-When a finding reaches `fixed` the maintainer has landed a patch, but consumers cannot pin to a commit — they need a tagged release. For findings in `status=fixed`, enqueue release-watch the same way: `POST {api_base}/findings/{id}/skills/release-watch/run`. Record the ids in a `release_watch` field of your report. If the endpoint returns `404 skill not found or inactive`, leave the field empty and carry on. Release-watch is idempotent: a finding that already has a release recorded re-confirms the existing value rather than flapping.
+When a finding reaches `fixed` the maintainer has landed a patch, but consumers cannot pin to a commit — they need a tagged release. For findings in `status=fixed`, enqueue release-watch the same way: `POST {api_base}/findings/{id}/skills/release-watch/run`. Record the ids in a `release_watch` field of your report; if there are none, write an empty list. If the endpoint returns `404 skill not found or inactive`, write an empty list and carry on. Release-watch is idempotent: a finding that already has a release recorded re-confirms the existing value rather than flapping.
 
 ## Output
 

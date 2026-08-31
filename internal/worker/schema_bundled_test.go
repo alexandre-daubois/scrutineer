@@ -66,7 +66,7 @@ func TestBundledSchemas_compileAndAcceptSamples(t *testing.T) {
 			    "native_signals":["language:Go","language:C"]},
 			  "triggered":["packages","advisories","security-deep-dive"],
 			  "skipped":["semgrep"],"gated":[],"already_done":["metadata"],
-			  "verify":[12,34],"errors":[]}`,
+			  "verify":[12,34],"release_watch":[55,56],"errors":[]}`,
 		},
 		{
 			"../../skills/triage/schema.json",
@@ -547,6 +547,7 @@ func TestBundledSchemas_rejectBadShapes(t *testing.T) {
 	}{
 		{"../../skills/triage/schema.json", `{"triggered":"not-a-list"}`, "/triggered"},
 		{"../../skills/triage/schema.json", `{"triggered":["Bad Name"]}`, "/triggered/0"},
+		{"../../skills/triage/schema.json", `{"release_watch":["55"]}`, "/release_watch/0"},
 		{"../../skills/bandit/schema.json",
 			`{"findings":[{"id":"F1","title":"B608","severity":"Severe","location":"app.py:9"}]}`,
 			"/findings/0/severity"},
