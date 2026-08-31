@@ -74,9 +74,9 @@ type ContainerRunner struct {
 	// on an SELinux-enabled host. Without it, container_t is denied the host
 	// labels and every scan fails with EACCES on the clone and output. Resolved
 	// once at startup from the --selinux switch (auto/on/off); see bindMount for
-	// the ":z" vs ":Z" rationale and ResolveSELinuxRelabel for the gating. The
-	// zero value is false, so docker on a non-SELinux host stays byte-for-byte
-	// unchanged.
+	// the ":z" vs ":Z" rationale and container.ResolveSELinuxRelabel for the
+	// gating. The zero value is false, so docker on a non-SELinux host stays
+	// byte-for-byte unchanged.
 	SELinuxRelabel bool
 	// Egress, when set, routes a hardened scan's egress through a proxy sidecar
 	// container instead of the in-process host proxy. setupRunner populates it
@@ -182,9 +182,10 @@ func proxySidecarName(key string) string {
 // rootful podman keep the host-proxy path unchanged, and so does Apple's
 // container -- its CLI has neither `--network podman` nor `network connect`, so it
 // must not take the sidecar path even though it still needs the per-scan
-// --internal verification (see needsEgressSidecar vs needsHardenedNetVerify).
+// --internal verification (see Runtime.NeedsEgressSidecar vs
+// Runtime.NeedsHardenedNetVerify).
 func (d ContainerRunner) usesEgressSidecar() bool {
-	return d.Hardened && d.Runtime.needsEgressSidecar()
+	return d.Hardened && d.Runtime.NeedsEgressSidecar()
 }
 
 func (d ContainerRunner) image() string {
@@ -331,7 +332,7 @@ func (d ContainerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Ev
 	}
 	runBase := d.buildRunArgsForProvider(absWork, image, hnet, absConfig, provider, "/work")
 
-	logLine := "$ " + d.Runtime.bin() + " run --rm " + image + " <skill:" + sj.Name + ">"
+	logLine := "$ " + runtimeBin(d.Runtime) + " run --rm " + image + " <skill:" + sj.Name + ">"
 	if d.ModelBaseURL != "" {
 		logLine += " [MODEL_BASE_URL=" + redactURLUserinfo(d.ModelBaseURL) + "]"
 	}
@@ -351,7 +352,7 @@ func (d ContainerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Ev
 			// report.json") that means nothing to a fresh agent, and there is
 			// no fresh framing to fall back on.
 			emit(Event{Kind: KindText, Text: "resume of session " + sj.ResumeSessionID + " failed; " + resumePromptNoFreshFallbackText})
-			return result, runErrors.failure(provider, d.Runtime.bin(), waitErr)
+			return result, runErrors.failure(provider, runtimeBin(d.Runtime), waitErr)
 		}
 		// The resume produced no session event, so claude could not load the
 		// saved conversation (gone from the mounted store). Restart fresh in
@@ -372,7 +373,7 @@ func (d ContainerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Ev
 		if hitMaxTurns {
 			return res, &MaxTurnsReachedError{}
 		}
-		return res, runErrors.failure(provider, d.Runtime.bin(), waitErr)
+		return res, runErrors.failure(provider, runtimeBin(d.Runtime), waitErr)
 	}
 	return res, nil
 }
@@ -384,10 +385,9 @@ func (d ContainerRunner) RunSkill(ctx context.Context, sj SkillJob, emit func(Ev
 // event arrived, e.g. a --resume that could not find the conversation).
 func (d ContainerRunner) runContainerOnce(ctx context.Context, runBase []string, sj SkillJob, processEnv map[string]string, emit func(Event)) (hitMaxTurns bool, sessionID string, waitErr error) {
 	h := d.harness()
-	harnessArgs := append([]string{h.Binary()}, h.Args(sj.toJob(d.Effort, d.MaxTurns, d.ModelBaseURL))...)
-	runArgs := append(append([]string{}, runBase...), harnessArgs...)
+	runArgs := append(append([]string{}, runBase...), d.harnessArgv(sj)...)
 
-	cmd := exec.CommandContext(ctx, d.Runtime.bin(), runArgs...)
+	cmd := exec.CommandContext(ctx, runtimeBin(d.Runtime), runArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = environmentWith(os.Environ(), processEnv)
 
@@ -435,7 +435,7 @@ func (d ContainerRunner) buildRunArgsForProvider(absWork, image string, hnet har
 	} else if d.HostGatewayIP != "" {
 		gwTarget = d.HostGatewayIP
 	}
-	args := d.Runtime.runArgs(
+	args := runtimeRunArgs(d.Runtime,
 		"--rm",
 		"--cap-drop", "ALL",
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
@@ -461,10 +461,10 @@ func (d ContainerRunner) buildRunArgsForProvider(absWork, image string, hnet har
 	for _, key := range keys {
 		args = append(args, "-e", key)
 	}
-	if d.Runtime.supportsHostGatewayAddHost() {
+	if supportsHostGatewayAddHost(d.Runtime) {
 		args = append(args, "--add-host", HostGatewayAlias+":"+gwTarget)
 	}
-	if d.Runtime.needsKeepID() {
+	if d.Runtime.NeedsKeepID() {
 		// Rootless podman remaps --user uid:gid through /etc/subuid, so writes
 		// to the bind mounts (/work output and the /harness-state resume store)
 		// would land owned by a subordinate uid. keep-id maps the container
@@ -499,7 +499,7 @@ func (d ContainerRunner) buildRunArgsForProvider(absWork, image string, hnet har
 		args = append(args,
 			"--read-only",
 		)
-		if d.Runtime.supportsNoNewPrivileges() {
+		if supportsNoNewPrivileges(d.Runtime) {
 			args = append(args, "--security-opt", "no-new-privileges")
 		}
 	}
@@ -676,6 +676,15 @@ func (d ContainerRunner) Backend() string { return HarnessName(d.harness()) }
 // harness returns the agent CLI to exec inside the container, defaulting
 // to claude-code when none is set so the zero ContainerRunner{} keeps its
 // historical behaviour.
+// harnessArgv builds the in-container agent command: the backend binary plus
+// the args its module derives from the resolved job.
+func (d ContainerRunner) harnessArgv(sj SkillJob) []string {
+	h := d.harness()
+	job := sj.toJob(d.Effort, d.MaxTurns, d.ModelBaseURL)
+	job.Effort = CappedEffort(h, job.Effort)
+	return append([]string{h.Binary()}, h.Args(job)...)
+}
+
 func (d ContainerRunner) harness() Harness { //nolint:ireturn // nil-default accessor; the field IS the interface
 	if d.Harness != nil {
 		return d.Harness
@@ -716,12 +725,12 @@ func ResolveHostGatewayIPv4(rt ContainerRuntime, image, network string) string {
 	if rt.Bin == runtimeApple {
 		return resolveAppleHostGatewayIPv4(rt, image, network)
 	}
-	args := rt.runArgs("--rm", "--add-host", "hgw:host-gateway")
+	args := runtimeRunArgs(rt, "--rm", "--add-host", "hgw:host-gateway")
 	if network != "" {
 		args = append(args, "--network", network)
 	}
 	args = append(args, "--entrypoint", "grep", "--", image, "hgw", "/etc/hosts")
-	out, err := exec.Command(rt.bin(), args...).Output()
+	out, err := exec.Command(runtimeBin(rt), args...).Output()
 	if err != nil {
 		return ""
 	}
@@ -743,12 +752,12 @@ func resolveAppleHostGatewayIPv4(rt ContainerRuntime, image, network string) str
 		return ""
 	}
 	const script = `awk '$2 == "00000000" { print $3; exit }' /proc/net/route`
-	args := rt.runArgs("--rm")
+	args := runtimeRunArgs(rt, "--rm")
 	if network != "" {
 		args = append(args, "--network", network)
 	}
 	args = append(args, "--entrypoint", "sh", "--", image, "-c", script)
-	out, err := exec.Command(rt.bin(), args...).Output()
+	out, err := exec.Command(runtimeBin(rt), args...).Output()
 	if err != nil {
 		return ""
 	}
@@ -816,12 +825,12 @@ func hardenedNetworkCreateArgs(name string) []string {
 // after the network was created (but before the post-scan rm ran) will
 // reuse the existing network instead of failing.
 func EnsureHardenedNetwork(rt ContainerRuntime, name string) error {
-	if out, err := exec.Command(rt.bin(), "network", "inspect", "--", name).Output(); err == nil && len(out) > 0 {
+	if out, err := exec.Command(runtimeBin(rt), "network", "inspect", "--", name).Output(); err == nil && len(out) > 0 {
 		return nil
 	}
-	cmd := exec.Command(rt.bin(), hardenedNetworkCreateArgs(name)...)
+	cmd := exec.Command(runtimeBin(rt), hardenedNetworkCreateArgs(name)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%s network create --internal %s: %w: %s", rt.bin(), name, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%s network create --internal %s: %w: %s", runtimeBin(rt), name, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
@@ -864,7 +873,7 @@ func (d ContainerRunner) setupHardenedNetwork(sj SkillJob, image string) (harden
 	if err := EnsureHardenedNetwork(d.Runtime, network); err != nil {
 		return hardenedNet{}, noop, fmt.Errorf("create hardened network: %w", err)
 	}
-	cleanup := func() { _ = exec.Command(d.Runtime.bin(), "network", "rm", "--", network).Run() }
+	cleanup := func() { _ = exec.Command(runtimeBin(d.Runtime), "network", "rm", "--", network).Run() }
 	// Resolve the host-gateway once against the network just created; reused by
 	// both the verification probe and the real run (for docker/podman an empty
 	// result falls through to the literal host-gateway alias downstream).
@@ -900,8 +909,8 @@ func (d ContainerRunner) setupHardenedNetwork(sj SkillJob, image string) (harden
 
 	// docker's bridge --internal is trusted, and so is rootful podman's (netavark
 	// + a bridge in the host netns, gateway on the host -- docker's model).
-	// Rootless podman and Apple need per-scan proof; see needsHardenedNetVerify.
-	if d.Runtime.needsHardenedNetVerify() {
+	// Rootless podman and Apple need per-scan proof; see NeedsHardenedNetVerify.
+	if d.Runtime.NeedsHardenedNetVerify() {
 		if err := d.verifyHardenedNetwork(hn, image); err != nil {
 			cleanup()
 			return hardenedNet{}, noop, fmt.Errorf("hardened network verification: %w", err)
@@ -930,22 +939,22 @@ func (d ContainerRunner) startProxySidecar(sj SkillJob, network string) (endpoin
 		return "", noop, fmt.Errorf("no host-gateway IPv4 resolved for the egress sidecar (podman >= 4.7 and a working rootless network backend are required)")
 	}
 	name := proxySidecarName(sj.isolationKey())
-	rmName := func() { _ = exec.Command(d.Runtime.bin(), "rm", "-f", "--", name).Run() }
+	rmName := func() { _ = exec.Command(runtimeBin(d.Runtime), "rm", "-f", "--", name).Run() }
 	// A residual sidecar from a crashed scan with this id would clash on the name
 	// and pin the network; remove it first (no-op when absent).
 	rmName()
 
-	if out, e := exec.Command(d.Runtime.bin(), d.proxySidecarRunArgs(name, network)...).CombinedOutput(); e != nil {
+	if out, e := exec.Command(runtimeBin(d.Runtime), d.proxySidecarRunArgs(name, network)...).CombinedOutput(); e != nil {
 		rmName() // a failed `run -d` can still leave a created container behind
-		return "", noop, fmt.Errorf("%s run sidecar: %w: %s", d.Runtime.bin(), e, strings.TrimSpace(string(out)))
+		return "", noop, fmt.Errorf("%s run sidecar: %w: %s", runtimeBin(d.Runtime), e, strings.TrimSpace(string(out)))
 	}
 
 	// The egress leg. `network connect` only works on netavark bridges, so pin
 	// the named default bridge rather than the rootless default (pasta), which
 	// rejects it ("pasta is not supported: invalid network mode").
-	if out, e := exec.Command(d.Runtime.bin(), "network", "connect", "--", "podman", name).CombinedOutput(); e != nil {
+	if out, e := exec.Command(runtimeBin(d.Runtime), "network", "connect", "--", "podman", name).CombinedOutput(); e != nil {
 		rmName()
-		return "", noop, fmt.Errorf("%s network connect podman: %w: %s", d.Runtime.bin(), e, strings.TrimSpace(string(out)))
+		return "", noop, fmt.Errorf("%s network connect podman: %w: %s", runtimeBin(d.Runtime), e, strings.TrimSpace(string(out)))
 	}
 	// The --internal network runs no DNS, so the scan must reach the sidecar by
 	// its address on that network rather than by name.
@@ -963,9 +972,9 @@ func (d ContainerRunner) startProxySidecar(sj SkillJob, network string) (endpoin
 // external lookups), so a container name would not resolve there.
 func (d ContainerRunner) sidecarNetworkIP(name, network string) (string, error) {
 	format := fmt.Sprintf(`{{(index .NetworkSettings.Networks %q).IPAddress}}`, network)
-	out, err := exec.Command(d.Runtime.bin(), "inspect", "--format", format, "--", name).Output()
+	out, err := exec.Command(runtimeBin(d.Runtime), "inspect", "--format", format, "--", name).Output()
 	if err != nil {
-		return "", fmt.Errorf("%s inspect %s: %w", d.Runtime.bin(), name, err)
+		return "", fmt.Errorf("%s inspect %s: %w", runtimeBin(d.Runtime), name, err)
 	}
 	ip := strings.TrimSpace(string(out))
 	if ip == "" {
@@ -1040,7 +1049,7 @@ func (d ContainerRunner) teardownHardenedScan(sj SkillJob, hnet hardenedNet, cle
 // exists) and forwards the noteworthy lines into the scan's event stream.
 // Best-effort: an already-gone sidecar or a logs failure yields nothing.
 func (d ContainerRunner) emitSidecarLogs(name string, emit func(Event)) {
-	out, err := exec.Command(d.Runtime.bin(), "logs", "--", name).CombinedOutput()
+	out, err := exec.Command(runtimeBin(d.Runtime), "logs", "--", name).CombinedOutput()
 	if err != nil {
 		return
 	}
@@ -1072,13 +1081,14 @@ func noteworthyProxyLogLine(line string) bool {
 // Dockerfile.runner -- would otherwise make every rootless --hardened scan fail
 // with a cryptic per-scan exec error; this turns that into one clear startup
 // failure. It is a no-op when the image is not present locally yet (the first
-// scan pulls it and would surface the same issue then), matching VerifyKeepID.
+// scan pulls it and would surface the same issue then), matching
+// container.VerifyKeepID.
 // Only meaningful on the sidecar path; the caller gates on rootless --hardened.
 func VerifyProxyBinary(ctx context.Context, rt ContainerRuntime, image string) error {
 	if image == "" || !imageExistsLocally(ctx, rt, image) {
 		return nil
 	}
-	out, err := exec.CommandContext(ctx, rt.bin(), "run", "--rm", "--pull", "never",
+	out, err := exec.CommandContext(ctx, runtimeBin(rt), "run", "--rm", "--pull", "never",
 		"--", image, "scrutineer", "proxy", "-h").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("runner image %q is missing the scrutineer binary required for the "+
@@ -1106,7 +1116,7 @@ func VerifyProxyBinary(ctx context.Context, rt ContainerRuntime, image string) e
 func (d ContainerRunner) verifyHardenedNetwork(hn hardenedNet, image string) error {
 	network := hn.name
 
-	out, err := exec.Command(d.Runtime.bin(), d.Runtime.hardenedEgressBlockArgs(network, image)...).CombinedOutput()
+	out, err := exec.Command(runtimeBin(d.Runtime), hardenedEgressBlockArgs(d.Runtime, network, image)...).CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil {
 		return fmt.Errorf("egress-block probe could not run on network %q: %w: %s", network, err, s)
@@ -1138,7 +1148,7 @@ func (d ContainerRunner) verifyHostProxyReachable(hn hardenedNet, image string) 
 	if err != nil {
 		return fmt.Errorf("parse proxy url: %w", err)
 	}
-	out, err := exec.Command(d.Runtime.bin(), d.Runtime.hardenedProxyReachArgs(hn.name, gwTarget, port, image)...).CombinedOutput()
+	out, err := exec.Command(runtimeBin(d.Runtime), hardenedProxyReachArgs(d.Runtime, hn.name, gwTarget, port, image)...).CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil {
 		return fmt.Errorf("proxy-reach probe could not run on network %q: %w: %s", hn.name, err, s)
@@ -1163,7 +1173,7 @@ func (d ContainerRunner) verifyProxySidecarReachable(hn hardenedNet, image strin
 	deadline := time.Now().Add(proxySidecarReadyTimeout)
 	var last string
 	for {
-		out, err := exec.Command(d.Runtime.bin(), sidecarReachArgs(hn.name, hn.proxyEndpoint, image)...).CombinedOutput()
+		out, err := exec.Command(runtimeBin(d.Runtime), sidecarReachArgs(hn.name, hn.proxyEndpoint, image)...).CombinedOutput()
 		last = strings.TrimSpace(string(out))
 		if err == nil && strings.Contains(last, "REACHED") {
 			return nil
@@ -1184,13 +1194,13 @@ func (d ContainerRunner) verifyProxySidecarReachable(hn hardenedNet, image strin
 // A non-running sidecar during verification means it gave up reaching the host
 // skill API and exited, so verification should fail fast with its logs.
 func (d ContainerRunner) sidecarRunning(name string) bool {
-	out, err := exec.Command(d.Runtime.bin(), "inspect", "--format", "{{.State.Running}}", "--", name).Output()
+	out, err := exec.Command(runtimeBin(d.Runtime), "inspect", "--format", "{{.State.Running}}", "--", name).Output()
 	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
 // sidecarLogTail returns the tail of the sidecar's logs for error enrichment.
 func (d ContainerRunner) sidecarLogTail(name string) string {
-	out, _ := exec.Command(d.Runtime.bin(), "logs", "--tail", "20", "--", name).CombinedOutput()
+	out, _ := exec.Command(runtimeBin(d.Runtime), "logs", "--tail", "20", "--", name).CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if s == "" {
 		return "(no logs)"
@@ -1202,12 +1212,12 @@ func (d ContainerRunner) sidecarLogTail(name string) string {
 // the per-scan --internal network, no proxy env, that must fail to reach a
 // routable public IP. A literal IP avoids a false pass from blocked DNS. curl
 // absence is reported as NOCURL so the caller can fail closed rather than read
-// the curl-not-found exit as "egress blocked". runArgs keeps Apple's
+// the curl-not-found exit as "egress blocked". runtimeRunArgs keeps Apple's
 // --progress none out of the probe output.
-func (rt ContainerRuntime) hardenedEgressBlockArgs(network, image string) []string {
+func hardenedEgressBlockArgs(rt ContainerRuntime, network, image string) []string {
 	const script = `command -v curl >/dev/null 2>&1 || { echo NOCURL; exit 0; }
 curl -s -m 5 -o /dev/null http://1.1.1.1 && echo REACHED || echo BLOCKED`
-	return rt.runArgs("--rm", "--cap-drop", "ALL", "--network", network,
+	return runtimeRunArgs(rt, "--rm", "--cap-drop", "ALL", "--network", network,
 		"--entrypoint", "sh", "--", image, "-c", script)
 }
 
@@ -1218,10 +1228,10 @@ curl -s -m 5 -o /dev/null http://1.1.1.1 && echo REACHED || echo BLOCKED`
 // real run does; Apple's CLI has no --add-host, so the probe targets the
 // resolved gateway IP directly -- the same address buildRunArgsForProvider points the proxy
 // env at for an Apple hardened scan.
-func (rt ContainerRuntime) hardenedProxyReachArgs(network, gatewayIP, proxyPort, image string) []string {
-	args := rt.runArgs("--rm", "--cap-drop", "ALL", "--network", network)
+func hardenedProxyReachArgs(rt ContainerRuntime, network, gatewayIP, proxyPort, image string) []string {
+	args := runtimeRunArgs(rt, "--rm", "--cap-drop", "ALL", "--network", network)
 	var target string
-	if rt.supportsHostGatewayAddHost() {
+	if supportsHostGatewayAddHost(rt) {
 		args = append(args, "--add-host", HostGatewayAlias+":"+gatewayIP)
 		target = "http://" + HostGatewayAlias + ":" + proxyPort + "/"
 	} else {
@@ -1268,13 +1278,13 @@ func proxyPortFromURL(proxyURL string) (string, error) {
 // networks actually removed; rm failures are intentionally swallowed
 // since a busy network is exactly what we want to leave alone.
 func SweepOrphanHardenedNetworks(rt ContainerRuntime) (int, error) {
-	out, err := exec.Command(rt.bin(), networkListNamesArgs(rt)...).Output()
+	out, err := exec.Command(runtimeBin(rt), networkListNamesArgs(rt)...).Output()
 	if err != nil {
-		return 0, fmt.Errorf("%s network list: %w", rt.bin(), err)
+		return 0, fmt.Errorf("%s network list: %w", runtimeBin(rt), err)
 	}
 	removed := 0
 	for _, n := range parseHardenedNetworkNames(out) {
-		if err := exec.Command(rt.bin(), "network", "rm", "--", n).Run(); err == nil {
+		if err := exec.Command(runtimeBin(rt), "network", "rm", "--", n).Run(); err == nil {
 			removed++
 		}
 	}
@@ -1321,15 +1331,15 @@ func parseHardenedNetworkNames(out []byte) []string {
 // makes). Returns the number removed; rm failures are swallowed (a container
 // already exiting is fine to skip).
 func SweepOrphanProxySidecars(rt ContainerRuntime) (int, error) {
-	out, err := exec.Command(rt.bin(), "ps", "-a",
+	out, err := exec.Command(runtimeBin(rt), "ps", "-a",
 		"--filter", "name="+proxySidecarPrefix,
 		"--format", "{{.Names}}").Output()
 	if err != nil {
-		return 0, fmt.Errorf("%s ps: %w", rt.bin(), err)
+		return 0, fmt.Errorf("%s ps: %w", runtimeBin(rt), err)
 	}
 	removed := 0
 	for _, n := range parseProxySidecarNames(out) {
-		if err := exec.Command(rt.bin(), "rm", "-f", "--", n).Run(); err == nil {
+		if err := exec.Command(runtimeBin(rt), "rm", "-f", "--", n).Run(); err == nil {
 			removed++
 		}
 	}

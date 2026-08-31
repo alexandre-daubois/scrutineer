@@ -24,6 +24,7 @@ import (
 	"filippo.io/age"
 	"filippo.io/age/agessh"
 	"filippo.io/age/plugin"
+	"github.com/alpha-omega-security/harness/container"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/term"
 	"gorm.io/gorm"
@@ -597,7 +598,7 @@ func run(log *slog.Logger) error {
 	// enforcing host will get the :z relabel, or that --selinux=off on an
 	// enforcing host is about to break file passing).
 	if f.set["selinux"] {
-		log.Info("selinux", "flag", f.selinux, "state", worker.HostSELinuxState())
+		log.Info("selinux", "flag", f.selinux, "state", container.HostSELinuxState())
 	}
 	if err := os.MkdirAll(f.dataDir, dataPermSecure); err != nil {
 		return err
@@ -945,18 +946,21 @@ func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRu
 	if f.hardenedRuntimeOnly && f.noContainer {
 		log.Warn("--hardened-runtime-only has no effect with --no-container (no container to harden)")
 	}
+	if capped := worker.CappedEffort(h, f.effort); capped != f.effort {
+		log.Warn("backend caps the effort level", "backend", f.backend, "requested", f.effort, "using", capped)
+	}
 	if f.noContainer {
 		log.Info("--no-container set, using local runner (no isolation)")
 		return worker.LocalClaude{Effort: f.effort, FullClone: f.fullClone(), MaxTurns: f.maxTurns}, apiBase, nil
 	}
-	rt, ok := worker.DetectRuntime(f.runtime)
+	rt, ok := container.DetectRuntime(f.runtime)
 	if !ok {
 		if f.hardened {
 			return nil, "", fmt.Errorf("%s not available: --hardened requires a container runtime, install and start it", f.runtime)
 		}
 		return nil, "", fmt.Errorf("%s not available: install and start it, or pass --no-container to run without containerisation (no isolation)", f.runtime)
 	}
-	if err := rt.HardeningSupportError(f.hardenedRuntimeOnly); err != nil {
+	if err := worker.HardeningSupportError(rt, f.hardenedRuntimeOnly); err != nil {
 		return nil, "", err
 	}
 	if rt.Bin == "apple" {
@@ -982,7 +986,7 @@ func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRu
 	}
 	smokeCtx, cancel := context.WithTimeout(context.Background(), f.smokeTimeout)
 	defer cancel()
-	if err := worker.VerifyKeepID(smokeCtx, rt, f.runnerImage); err != nil {
+	if err := container.VerifyKeepID(smokeCtx, rt, f.runnerImage); err != nil {
 		return nil, "", err
 	}
 	// SELinux bind-mount relabeling (--selinux auto/on/off). Resolve it once
@@ -990,11 +994,12 @@ func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRu
 	// so an SELinux denial fails at startup instead of on every scan's file
 	// passing. Both no-op on a non-SELinux host with relabeling off (the default
 	// there), keeping that path unchanged.
-	relabel := worker.ResolveSELinuxRelabel(f.selinux)
+	relabel := container.ResolveSELinuxRelabel(f.selinux)
 	selinuxCtx, cancelSE := context.WithTimeout(context.Background(), f.smokeTimeout)
 	defer cancelSE()
-	if err := worker.VerifySELinuxMount(selinuxCtx, rt, f.runnerImage, relabel); err != nil {
-		return nil, "", err
+	if err := container.VerifySELinuxMount(selinuxCtx, rt, f.runnerImage, relabel); err != nil {
+		// The module's message names an abstract relabel mode, not the flag.
+		return nil, "", fmt.Errorf("--selinux=%s: %w", f.selinux, err)
 	}
 	gwIP, apiHost, err := resolveScanNetworking(rt, f, log)
 	if err != nil {

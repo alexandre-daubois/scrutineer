@@ -384,7 +384,7 @@ func (d ContainerRunner) checkOpencodeReadiness(ctx context.Context, provider op
 	}
 	probe := func(argv ...string) ([]byte, error) {
 		args := d.buildRunArgsForProvider(absWork, image, hnet, harnessStateDir, provider, "/tmp")
-		cmd := exec.CommandContext(ctx, d.Runtime.bin(), append(args, argv...)...)
+		cmd := exec.CommandContext(ctx, runtimeBin(d.Runtime), append(args, argv...)...)
 		cmd.Env = environmentWith(os.Environ(), provider.Env)
 		return cmd.CombinedOutput()
 	}
@@ -532,7 +532,7 @@ func runnerImageContentDigest(ctx context.Context, rt ContainerRuntime, image st
 		return appleImageContentDigest(ctx, image)
 	}
 	const format = `{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}`
-	out, err := exec.CommandContext(ctx, rt.bin(), "image", "inspect", "--format", format, "--", image).Output()
+	out, err := exec.CommandContext(ctx, runtimeBin(rt), "image", "inspect", "--format", format, "--", image).Output()
 	if err != nil {
 		return ""
 	}

@@ -313,14 +313,14 @@ func DetectProfile(ctx context.Context, rt ContainerRuntime, runnerImage, srcDir
 	if err != nil {
 		return Profile{}
 	}
-	args := rt.runArgs("--rm",
+	args := runtimeRunArgs(rt, "--rm",
 		"--network", "none",
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-v", bindMount(absSrc, "/src", relabel, "ro"),
 		"--entrypoint", "brief",
 		runnerImage, "/src",
 	)
-	cmd := exec.CommandContext(ctx, rt.bin(), args...)
+	cmd := exec.CommandContext(ctx, runtimeBin(rt), args...)
 	out, err := cmd.Output()
 	if err != nil {
 		// A brief failure degrades to the default runner image; the scan
@@ -483,16 +483,16 @@ func (p Profile) EnsureImage(ctx context.Context, rt ContainerRuntime, profilesD
 		if p.BaseProfile == "" && baseDigest == "" {
 			emit(Event{Kind: KindText, Text: "profile: reusing cached " + tag +
 				" but could not verify the runner base is current (" + runnerImage +
-				" digest unresolved); if it changed, `" + rt.bin() + " rmi " + tag + "` to force a rebuild"})
+				" digest unresolved); if it changed, `" + runtimeBin(rt) + " rmi " + tag + "` to force a rebuild"})
 		}
 		return tag, nil
 	}
 	emit(Event{Kind: KindText, Text: "profile: building " + tag + " (first build can take several minutes)"})
 	start := time.Now()
 	args := profileBuildArgs(p, tag, dockerfile, filepath.Join(profilesDir, p.Name), baseImage, baseDigest)
-	cmd := exec.CommandContext(ctx, rt.bin(), args...)
+	cmd := exec.CommandContext(ctx, runtimeBin(rt), args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("%s build %s: %w\n%s", rt.bin(), tag, err, out)
+		return "", fmt.Errorf("%s build %s: %w\n%s", runtimeBin(rt), tag, err, out)
 	}
 	emit(Event{Kind: KindText, Text: "profile: built " + tag + " in " + time.Since(start).Round(time.Second).String()})
 	return tag, nil
@@ -525,5 +525,5 @@ func profileBuildArgs(p Profile, tag, dockerfile, contextDir, baseImage, baseDig
 }
 
 func imageExistsLocally(ctx context.Context, rt ContainerRuntime, tag string) bool {
-	return exec.CommandContext(ctx, rt.bin(), "image", "inspect", tag).Run() == nil
+	return exec.CommandContext(ctx, runtimeBin(rt), "image", "inspect", tag).Run() == nil
 }

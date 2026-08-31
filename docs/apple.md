@@ -89,7 +89,7 @@ per-scan `--internal` network gets its own gateway (for example `192.168.128.1`,
 distinct from the default network's `192.168.64.1`), and the runner points the
 container's `HTTPS_PROXY`/`HTTP_PROXY` at that gateway IP directly. As with
 rootless podman, each hardened scan first **proves the network fail-closed**
-(`needsHardenedNetVerify`): two throwaway probes confirm external egress is
+(`Runtime.NeedsHardenedNetVerify`): two throwaway probes confirm external egress is
 blocked yet the host proxy is still reachable, and the scan is refused
 otherwise. This guards against Apple's known networking rough edges (DNS quirks,
 the host-access caveat in

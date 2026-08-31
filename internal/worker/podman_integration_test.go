@@ -23,6 +23,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/alpha-omega-security/harness/container"
 )
 
 const (
@@ -35,7 +37,7 @@ func podmanOrSkip(t *testing.T) ContainerRuntime {
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Skip("podman not installed")
 	}
-	rt, ok := DetectRuntime("podman")
+	rt, ok := container.DetectRuntime("podman")
 	if !ok {
 		t.Skip("podman not reachable")
 	}
@@ -47,7 +49,7 @@ func pullOrSkip(t *testing.T, rt ContainerRuntime, image string) string {
 	if imageExistsLocally(context.Background(), rt, image) {
 		return image
 	}
-	if out, err := exec.Command(rt.bin(), "pull", image).CombinedOutput(); err != nil {
+	if out, err := exec.Command(runtimeBin(rt), "pull", image).CombinedOutput(); err != nil {
 		t.Skipf("cannot pull %s: %v: %s", image, err, strings.TrimSpace(string(out)))
 	}
 	return image
@@ -55,7 +57,7 @@ func pullOrSkip(t *testing.T, rt ContainerRuntime, image string) string {
 
 func runProbeOutput(t *testing.T, rt ContainerRuntime, args []string) string {
 	t.Helper()
-	out, _ := exec.Command(rt.bin(), args...).CombinedOutput()
+	out, _ := exec.Command(runtimeBin(rt), args...).CombinedOutput()
 	return strings.TrimSpace(string(out))
 }
 
@@ -76,10 +78,10 @@ func TestIntegration_KeepIDOwnership(t *testing.T) {
 	args := []string{
 		"run", "--rm", "--userns=keep-id",
 		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
-		"-v", bindMount(work, "/work", HostSELinuxEnabled()), "-w", "/work",
+		"-v", bindMount(work, "/work", container.HostSELinuxEnabled()), "-w", "/work",
 		"--entrypoint", "sh", "--", image, "-c", "touch /work/out",
 	}
-	if out, err := exec.Command(rt.bin(), args...).CombinedOutput(); err != nil {
+	if out, err := exec.Command(runtimeBin(rt), args...).CombinedOutput(); err != nil {
 		t.Fatalf("container run failed: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	info, err := os.Stat(filepath.Join(work, "out"))
@@ -98,14 +100,14 @@ func TestIntegration_KeepIDOwnership(t *testing.T) {
 // TestIntegration_SELinuxBindMount exercises the relabeled-mount smoke test on a
 // real podman. On an SELinux-enabled host it proves the ":z" relabel actually
 // lets the container read a host-seeded file and write output the host reads
-// back; on a non-SELinux host VerifySELinuxMount is a no-op, so the test skips.
+// back; on a non-SELinux host the mount check is a no-op, so the test skips.
 func TestIntegration_SELinuxBindMount(t *testing.T) {
 	rt := podmanOrSkip(t)
-	if !HostSELinuxEnabled() {
+	if !container.HostSELinuxEnabled() {
 		t.Skip("SELinux not enabled on host; nothing to verify")
 	}
 	image := pullOrSkip(t, rt, alpineImage)
-	if err := VerifySELinuxMount(context.Background(), rt, image, true); err != nil {
+	if err := container.VerifySELinuxMount(context.Background(), rt, image, true); err != nil {
 		t.Fatalf("VerifySELinuxMount on a relabeled mount: %v", err)
 	}
 }
@@ -133,7 +135,7 @@ func TestIntegration_HardenedEgressBlocked(t *testing.T) {
 
 	// Baseline on the default network: if the host itself has no egress we
 	// cannot prove the --internal network is what blocks it, so skip.
-	if base := runProbeOutput(t, rt, rt.hardenedEgressBlockArgs("podman", image)); !strings.Contains(base, "REACHED") {
+	if base := runProbeOutput(t, rt, hardenedEgressBlockArgs(rt, "podman", image)); !strings.Contains(base, "REACHED") {
 		t.Skipf("host has no baseline egress (probe: %q); cannot prove --internal blocks it", base)
 	}
 
@@ -141,9 +143,9 @@ func TestIntegration_HardenedEgressBlocked(t *testing.T) {
 	if err := EnsureHardenedNetwork(rt, netName); err != nil {
 		t.Fatalf("create internal network: %v", err)
 	}
-	defer func() { _ = exec.Command(rt.bin(), "network", "rm", "--", netName).Run() }()
+	defer func() { _ = exec.Command(runtimeBin(rt), "network", "rm", "--", netName).Run() }()
 
-	if got := runProbeOutput(t, rt, rt.hardenedEgressBlockArgs(netName, image)); !strings.Contains(got, "BLOCKED") {
+	if got := runProbeOutput(t, rt, hardenedEgressBlockArgs(rt, netName, image)); !strings.Contains(got, "BLOCKED") {
 		t.Errorf("egress on --internal network = %q, want BLOCKED", got)
 	}
 }
@@ -173,7 +175,7 @@ func TestIntegration_VerifyHardenedNetwork(t *testing.T) {
 	if err := EnsureHardenedNetwork(rt, netName); err != nil {
 		t.Fatalf("create internal network: %v", err)
 	}
-	defer func() { _ = exec.Command(rt.bin(), "network", "rm", "--", netName).Run() }()
+	defer func() { _ = exec.Command(runtimeBin(rt), "network", "rm", "--", netName).Run() }()
 
 	gwIP := ResolveHostGatewayIPv4(rt, image, netName)
 	if gwIP == "" {
@@ -209,7 +211,7 @@ func containerScriptOutput(t *testing.T, rt ContainerRuntime, extra []string, im
 	t.Helper()
 	args := append([]string{"run", "--rm"}, extra...)
 	args = append(args, "--entrypoint", "sh", "--", image, "-c", script)
-	out, _ := exec.Command(rt.bin(), args...).CombinedOutput()
+	out, _ := exec.Command(runtimeBin(rt), args...).CombinedOutput()
 	return strings.TrimSpace(string(out))
 }
 
@@ -320,10 +322,10 @@ func TestIntegration_ProxySidecarEnforcedEgress(t *testing.T) {
 	cleanup()
 	cleanedUp = true
 	name := proxySidecarName(sj.isolationKey())
-	if err := exec.Command(rt.bin(), "inspect", "--", name).Run(); err == nil {
+	if err := exec.Command(runtimeBin(rt), "inspect", "--", name).Run(); err == nil {
 		t.Errorf("sidecar %q still present after cleanup", name)
 	}
-	if err := exec.Command(rt.bin(), "network", "inspect", "--", hn.name).Run(); err == nil {
+	if err := exec.Command(runtimeBin(rt), "network", "inspect", "--", hn.name).Run(); err == nil {
 		t.Errorf("network %q still present after cleanup", hn.name)
 	}
 }

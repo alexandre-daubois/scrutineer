@@ -77,6 +77,29 @@ func TestRunnerImageName(t *testing.T) {
 	}
 }
 
+// TestVersionReBanner covers the Apple `container --version` banners
+// RuntimeServerVersion feeds versionRe.
+func TestVersionReBanner(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"container-apiserver version 1.0.0 (build: release)", "1.0.0"},
+		{"container CLI version 1.2.3", "1.2.3"},
+		{"1.2", "1.2"},
+		{"container version (2.0.1)", "2.0.1"},
+		// No numeric minor, so nothing in the banner reads as a version.
+		{"container version 4", ""},
+		{"container-apiserver", ""},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		if got := versionRe.FindString(tc.in); got != tc.want {
+			t.Errorf("versionRe.FindString(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestRuntimeServerVersion_Apple(t *testing.T) {
 	fakeContainer(t)
 	got := RuntimeServerVersion(context.Background(), ContainerRuntime{Bin: "apple"})
@@ -119,7 +142,7 @@ func fakeContainer(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "container.log")
-	appleBinary := ContainerRuntime{Bin: "apple"}.bin()
+	appleBinary := runtimeBin(ContainerRuntime{Bin: "apple"})
 	script := `#!/bin/sh
 printf '%s\n' "$*" >> "$SCRUTINEER_FAKE_CONTAINER_LOG"
 if [ "$1" = "--version" ]; then

@@ -338,7 +338,7 @@ The `docker build` commands shown for the runner image and profiles can be run a
 | `-config` | `./scrutineer.yaml` if present | Path to YAML config file |
 | `-addr` | `127.0.0.1:8080` | Listen address |
 | `-data` | `./data` | Data directory for the database and workspaces |
-| `-effort` | `high` | Claude effort level (claude backend only) |
+| `-effort` | `high` | Reasoning effort level, applied by the `claude` and `copilot` backends and ignored by `codex` and `opencode`. Copilot CLI stops at `xhigh`, so `max` is capped to it there |
 | `-skills` | - | Additional local directory to load SKILL.md files from; same-named skills override the bundled copies (repeatable) |
 | `-skills-repo` | - | `owner/repo[@ref]` or credential-free git HTTPS URL `https://host/path[@ref]` to clone skills from on startup; `@ref` pins a branch, tag or commit and the resolved SHA is recorded on every scan; private repositories use config-file-only `skills_repo_token` |
 | `-backend` | `claude` | Agent CLI the container runner execs: `claude`, `codex`, `opencode`, or `copilot`. Non-claude backends require the containerised runner |

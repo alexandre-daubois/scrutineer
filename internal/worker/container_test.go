@@ -422,7 +422,7 @@ func TestHardenedProbeArgs(t *testing.T) {
 	// internal network, carry no proxy env (or it would test the proxy path
 	// instead of raw egress), hit a literal IP (so a pass is not just blocked
 	// DNS), and guard against a curl-less image.
-	block := docker.hardenedEgressBlockArgs("scrutineer-hardened-7", "img:latest")
+	block := hardenedEgressBlockArgs(docker, "scrutineer-hardened-7", "img:latest")
 	if !hasAdjacent(block, "--network", "scrutineer-hardened-7") {
 		t.Errorf("block probe missing --network: %v", block)
 	}
@@ -444,7 +444,7 @@ func TestHardenedProbeArgs(t *testing.T) {
 
 	// docker/podman reach probe wires the gateway alias the same way the real
 	// run does and targets the proxy port through that alias.
-	reach := docker.hardenedProxyReachArgs("scrutineer-hardened-7", "192.0.2.5", "54321", "img:latest")
+	reach := hardenedProxyReachArgs(docker, "scrutineer-hardened-7", "192.0.2.5", "54321", "img:latest")
 	if !hasAdjacent(reach, "--network", "scrutineer-hardened-7") {
 		t.Errorf("reach probe missing --network: %v", reach)
 	}
@@ -458,11 +458,11 @@ func TestHardenedProbeArgs(t *testing.T) {
 	// Apple has no --add-host: the block probe still suppresses lifecycle
 	// progress, and the reach probe targets the resolved gateway IP:port
 	// directly (the same address buildRunArgs points the proxy env at).
-	appleBlock := apple.hardenedEgressBlockArgs("scrutineer-hardened-7", "img:latest")
+	appleBlock := hardenedEgressBlockArgs(apple, "scrutineer-hardened-7", "img:latest")
 	if !hasAdjacent(appleBlock, "--progress", "none") {
 		t.Errorf("apple block probe should suppress progress: %v", appleBlock)
 	}
-	appleReach := apple.hardenedProxyReachArgs("scrutineer-hardened-7", "192.168.128.1", "54321", "img:latest")
+	appleReach := hardenedProxyReachArgs(apple, "scrutineer-hardened-7", "192.168.128.1", "54321", "img:latest")
 	for _, a := range appleReach {
 		if a == "--add-host" {
 			t.Errorf("apple reach probe must not use --add-host: %v", appleReach)

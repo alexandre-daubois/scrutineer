@@ -62,7 +62,7 @@ func RunnerImageStaleness(ctx context.Context, rt ContainerRuntime, image string
 	if !ok || remoteDigest == "" {
 		return RunnerImageStatus{}, false
 	}
-	return evalRunnerStaleness(image, localDigest, remoteDigest, created, time.Now(), rt.bin()), true
+	return evalRunnerStaleness(image, localDigest, remoteDigest, created, time.Now(), runtimeBin(rt)), true
 }
 
 // evalRunnerStaleness is the pure staleness decision, split out so it can be
@@ -95,7 +95,7 @@ func localRunnerImage(ctx context.Context, rt ContainerRuntime, image string) (d
 	// on the second, which time.Parse rejects into a zero time.
 	const format = `{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}` + "\n" +
 		`{{index .Config.Labels "org.opencontainers.image.created"}}`
-	out, err := exec.CommandContext(ctx, rt.bin(), "image", "inspect", "--format", format, "--", image).Output()
+	out, err := exec.CommandContext(ctx, runtimeBin(rt), "image", "inspect", "--format", format, "--", image).Output()
 	if err != nil {
 		return "", time.Time{}, false
 	}

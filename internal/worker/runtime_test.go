@@ -1,14 +1,11 @@
 package worker
 
 import (
-	"errors"
 	"slices"
-	"strings"
 	"testing"
 )
 
-func TestContainerRuntimeBin(t *testing.T) {
-	appleBinary := "container"
+func TestRuntimeBin(t *testing.T) {
 	tests := []struct {
 		rt   ContainerRuntime
 		want string
@@ -17,81 +14,55 @@ func TestContainerRuntimeBin(t *testing.T) {
 		{ContainerRuntime{Bin: "docker"}, "docker"},
 		{ContainerRuntime{Bin: "podman"}, "podman"},
 		{ContainerRuntime{Bin: "podman", Rootless: true}, "podman"},
-		{ContainerRuntime{Bin: "apple"}, appleBinary},
+		{ContainerRuntime{Bin: "apple"}, "container"},
 	}
 	for _, tc := range tests {
-		if got := tc.rt.bin(); got != tc.want {
-			t.Errorf("%+v.bin() = %q, want %q", tc.rt, got, tc.want)
+		if got := runtimeBin(tc.rt); got != tc.want {
+			t.Errorf("runtimeBin(%+v) = %q, want %q", tc.rt, got, tc.want)
 		}
 	}
 }
 
-func TestContainerRuntimeNeedsKeepID(t *testing.T) {
-	// keep-id is the bind-mount ownership fix and must fire for rootless
-	// podman ONLY: docker and rootful podman already run as the host uid, so
-	// remapping there would break mounts.
+// TestContainerRuntimeEnginePredicates pins the keep-id, hardened-network and
+// egress-sidecar matrix the scan argv branches on. The predicates live in the
+// dependency now, and the last two are security boundaries, so a bump that
+// widens or drops one has to fail here.
+func TestContainerRuntimeEnginePredicates(t *testing.T) {
 	tests := []struct {
-		rt   ContainerRuntime
-		want bool
+		name          string
+		rt            ContainerRuntime
+		wantKeepID    bool
+		wantNetVerify bool
+		wantSidecar   bool
 	}{
-		{ContainerRuntime{}, false},                              // docker (zero value)
-		{ContainerRuntime{Bin: "docker"}, false},                 // docker explicit
-		{ContainerRuntime{Bin: "podman"}, false},                 // rootful podman
-		{ContainerRuntime{Bin: "podman", Rootless: true}, true},  // rootless podman
-		{ContainerRuntime{Bin: "docker", Rootless: true}, false}, // rootless flag ignored for docker
-		{ContainerRuntime{Bin: "apple"}, false},                  // Apple container has no podman subuid remap
+		{"docker zero value", ContainerRuntime{}, false, false, false},
+		{"docker explicit", ContainerRuntime{Bin: "docker"}, false, false, false},
+		{"docker rootless flag ignored", ContainerRuntime{Bin: "docker", Rootless: true}, false, false, false},
+		{"rootful podman", ContainerRuntime{Bin: "podman"}, false, false, false},
+		{"rootless podman", ContainerRuntime{Bin: "podman", Rootless: true}, true, true, true},
+		// Apple has no podman subuid remap and keeps the in-process host
+		// proxy, but its --internal network is still proven per scan.
+		{"apple", ContainerRuntime{Bin: "apple"}, false, true, false},
 	}
 	for _, tc := range tests {
-		if got := tc.rt.needsKeepID(); got != tc.want {
-			t.Errorf("%+v.needsKeepID() = %v, want %v", tc.rt, got, tc.want)
-		}
-	}
-}
-
-func TestContainerRuntimeNeedsHardenedNetVerify(t *testing.T) {
-	// Per-scan --internal verification must fire for rootless podman ONLY:
-	// docker and rootful podman use a trusted host-netns bridge (docker's model),
-	// so they keep the trusted path and skip the probe cost.
-	tests := []struct {
-		rt   ContainerRuntime
-		want bool
-	}{
-		{ContainerRuntime{}, false},                             // docker (zero value)
-		{ContainerRuntime{Bin: "docker"}, false},                // docker explicit
-		{ContainerRuntime{Bin: "podman"}, false},                // rootful podman -> trusted like docker
-		{ContainerRuntime{Bin: "podman", Rootless: true}, true}, // rootless podman -> verified
-		{ContainerRuntime{Bin: "apple"}, true},                  // apple --internal -> proven per scan
-	}
-	for _, tc := range tests {
-		if got := tc.rt.needsHardenedNetVerify(); got != tc.want {
-			t.Errorf("%+v.needsHardenedNetVerify() = %v, want %v", tc.rt, got, tc.want)
-		}
-	}
-}
-
-func TestContainerRuntimeNeedsEgressSidecar(t *testing.T) {
-	// The egress proxy sidecar is for rootless podman ONLY -- the one runtime
-	// where the host proxy is unreachable across the --internal boundary. Apple
-	// keeps the in-process host proxy (its CLI has no --network podman / network
-	// connect), and docker and rootful podman use the trusted host-netns bridge.
-	tests := []struct {
-		rt   ContainerRuntime
-		want bool
-	}{
-		{ContainerRuntime{}, false},                             // docker (zero value)
-		{ContainerRuntime{Bin: "docker"}, false},                // docker explicit
-		{ContainerRuntime{Bin: "podman"}, false},                // rootful podman -> host proxy
-		{ContainerRuntime{Bin: "podman", Rootless: true}, true}, // rootless podman -> sidecar
-		{ContainerRuntime{Bin: "apple"}, false},                 // apple -> host proxy, NOT a sidecar
-	}
-	for _, tc := range tests {
-		if got := tc.rt.needsEgressSidecar(); got != tc.want {
-			t.Errorf("%+v.needsEgressSidecar() = %v, want %v", tc.rt, got, tc.want)
-		}
-		// The exported wrapper must agree with the internal predicate.
-		if got := tc.rt.NeedsEgressSidecar(); got != tc.want {
-			t.Errorf("%+v.NeedsEgressSidecar() = %v, want %v", tc.rt, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.rt.NeedsKeepID(); got != tc.wantKeepID {
+				t.Errorf("NeedsKeepID = %v, want %v", got, tc.wantKeepID)
+			}
+			if got := tc.rt.NeedsHardenedNetVerify(); got != tc.wantNetVerify {
+				t.Errorf("NeedsHardenedNetVerify = %v, want %v", got, tc.wantNetVerify)
+			}
+			if got := tc.rt.NeedsEgressSidecar(); got != tc.wantSidecar {
+				t.Errorf("NeedsEgressSidecar = %v, want %v", got, tc.wantSidecar)
+			}
+			// The sidecar argv stays gated on --hardened.
+			if got := (ContainerRunner{Runtime: tc.rt}).usesEgressSidecar(); got {
+				t.Errorf("usesEgressSidecar without --hardened = %v, want false", got)
+			}
+			if got := (ContainerRunner{Runtime: tc.rt, Hardened: true}).usesEgressSidecar(); got != tc.wantSidecar {
+				t.Errorf("usesEgressSidecar with --hardened = %v, want %v", got, tc.wantSidecar)
+			}
+		})
 	}
 }
 
@@ -115,17 +86,17 @@ func TestContainerRuntimeCapabilityFlags(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.rt.supportsHostGatewayAddHost(); got != tc.wantHostGatewayAdd {
+			if got := supportsHostGatewayAddHost(tc.rt); got != tc.wantHostGatewayAdd {
 				t.Errorf("supportsHostGatewayAddHost = %v, want %v", got, tc.wantHostGatewayAdd)
 			}
-			if got := tc.rt.supportsPullNever(); got != tc.wantPullNever {
+			if got := supportsPullNever(tc.rt); got != tc.wantPullNever {
 				t.Errorf("supportsPullNever = %v, want %v", got, tc.wantPullNever)
 			}
-			if got := tc.rt.supportsNoNewPrivileges(); got != tc.wantNoNewPrivileges {
+			if got := supportsNoNewPrivileges(tc.rt); got != tc.wantNoNewPrivileges {
 				t.Errorf("supportsNoNewPrivileges = %v, want %v", got, tc.wantNoNewPrivileges)
 			}
-			if got := tc.rt.runArgs("--rm"); !slices.Equal(got, tc.wantRunArgs) {
-				t.Errorf("runArgs = %v, want %v", got, tc.wantRunArgs)
+			if got := runtimeRunArgs(tc.rt, "--rm"); !slices.Equal(got, tc.wantRunArgs) {
+				t.Errorf("runtimeRunArgs = %v, want %v", got, tc.wantRunArgs)
 			}
 		})
 	}
@@ -151,7 +122,7 @@ func TestHardeningSupportError(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := tc.rt.HardeningSupportError(tc.hardenedRuntimeOnly)
+			err := HardeningSupportError(tc.rt, tc.hardenedRuntimeOnly)
 			if (err != nil) != tc.wantErr {
 				t.Errorf("HardeningSupportError(%v) err = %v, wantErr %v", tc.hardenedRuntimeOnly, err, tc.wantErr)
 			}
@@ -159,167 +130,24 @@ func TestHardeningSupportError(t *testing.T) {
 	}
 }
 
-func TestDetectRuntime(t *testing.T) {
-	probeErr := errors.New("not installed")
-	appleBinary := "container"
-	type call struct {
-		name string
-		args []string
-	}
-	tests := []struct {
+func TestBindMount(t *testing.T) {
+	cases := []struct {
 		name     string
-		prefer   string
-		probeOut []byte
-		probeErr error
-		want     ContainerRuntime
-		wantOK   bool
+		src, dst string
+		relabel  bool
+		opts     []string
+		want     string
 	}{
-		{"docker ok", "docker", []byte("24.0.7\n"), nil, ContainerRuntime{Bin: "docker", Version: "24.0.7"}, true},
-		{"empty defaults to docker", "", []byte("24.0.7\n"), nil, ContainerRuntime{Bin: "docker", Version: "24.0.7"}, true},
-		{"podman rootless", "podman", []byte("4.9.4|true\n"), nil, ContainerRuntime{Bin: "podman", Rootless: true, Version: "4.9.4"}, true},
-		{"podman rootful", "podman", []byte("4.9.4|false\n"), nil, ContainerRuntime{Bin: "podman", Rootless: false, Version: "4.9.4"}, true},
-		{"apple", "apple", []byte("FIELD VALUE\nstatus running\napiserver.version container-apiserver version 1.0.0 (build: release)\n"), nil, ContainerRuntime{Bin: "apple", Version: "1.0.0"}, true},
-		// No fallback: a podman probe failure stays unavailable; the docker
-		// default on a podman-only host likewise fails (explicit opt-in).
-		{"podman unreachable", "podman", nil, probeErr, ContainerRuntime{}, false},
-		{"docker unreachable", "docker", nil, probeErr, ContainerRuntime{}, false},
-		{"apple unreachable", "apple", nil, probeErr, ContainerRuntime{}, false},
-		{"podman malformed", "podman", []byte("nopipe\n"), nil, ContainerRuntime{}, false},
-		{"docker empty output", "docker", []byte("  \n"), nil, ContainerRuntime{}, false},
+		{"plain, no relabel", "/abs/work", "/work", false, nil, "/abs/work:/work"},
+		{"plain, relabel", "/abs/work", "/work", true, nil, "/abs/work:/work:z"},
+		{"ro, no relabel", "/abs/src", "/src", false, []string{"ro"}, "/abs/src:/src:ro"},
+		{"ro, relabel appends to opts", "/abs/src", "/src", true, []string{"ro"}, "/abs/src:/src:ro,z"},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			var calls []call
-			probe := func(name string, args ...string) ([]byte, error) {
-				calls = append(calls, call{name, append([]string(nil), args...)})
-				return tc.probeOut, tc.probeErr
-			}
-			got, ok := detectRuntime(tc.prefer, probe)
-			if ok != tc.wantOK || got != tc.want {
-				t.Fatalf("detectRuntime(%q) = %+v,%v; want %+v,%v", tc.prefer, got, ok, tc.want, tc.wantOK)
-			}
-			// docker's {{.ServerVersion}} errors against podman's schema and
-			// podman's fields error against docker's; assert each engine only
-			// ever sees its own template (guards the availability-flip risk).
-			for _, c := range calls {
-				joined := strings.Join(c.args, " ")
-				if c.name == "podman" && strings.Contains(joined, "ServerVersion") {
-					t.Errorf("podman probed with docker template: %v", c.args)
-				}
-				if c.name == "docker" && strings.Contains(joined, "Host.Security.Rootless") {
-					t.Errorf("docker probed with podman template: %v", c.args)
-				}
-				if c.name == appleBinary && strings.Contains(joined, "--format") {
-					t.Errorf("apple runtime probed with docker/podman format template: %v", c.args)
-				}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := bindMount(c.src, c.dst, c.relabel, c.opts...); got != c.want {
+				t.Errorf("bindMount(%q,%q,%v,%v) = %q, want %q", c.src, c.dst, c.relabel, c.opts, got, c.want)
 			}
 		})
-	}
-
-	t.Run("bogus prefer never probes", func(t *testing.T) {
-		called := false
-		probe := func(string, ...string) ([]byte, error) { called = true; return nil, nil }
-		if got, ok := detectRuntime("containerd", probe); ok || got != (ContainerRuntime{}) {
-			t.Errorf("detectRuntime(bogus) = %+v,%v; want zero,false", got, ok)
-		}
-		if called {
-			t.Error("bogus runtime should not shell out")
-		}
-	})
-}
-
-func TestParsePodmanInfo(t *testing.T) {
-	tests := []struct {
-		in       string
-		wantVer  string
-		wantRoot bool
-		wantOK   bool
-	}{
-		{"4.9.4|true\n", "4.9.4", true, true},
-		{"4.9.4|false", "4.9.4", false, true},
-		{" 5.0.1 | true ", "5.0.1", true, true},
-		{"nopipe", "", false, false},
-		{"4.9.4|maybe", "", false, false},
-		{"", "", false, false},
-	}
-	for _, tc := range tests {
-		ver, root, ok := parsePodmanInfo([]byte(tc.in))
-		if ver != tc.wantVer || root != tc.wantRoot || ok != tc.wantOK {
-			t.Errorf("parsePodmanInfo(%q) = %q,%v,%v; want %q,%v,%v", tc.in, ver, root, ok, tc.wantVer, tc.wantRoot, tc.wantOK)
-		}
-	}
-}
-
-func TestParseAppleStatus(t *testing.T) {
-	in := []byte("FIELD VALUE\nstatus running\napiserver.version container-apiserver version 1.0.0 (build: release)\n")
-	if got := parseAppleStatus(in); got != "1.0.0" {
-		t.Errorf("parseAppleStatus = %q, want 1.0.0", got)
-	}
-	if got := parseAppleStatus([]byte("container CLI version 1.2.3")); got != "1.2.3" {
-		t.Errorf("fallback parseAppleStatus = %q, want 1.2.3", got)
-	}
-}
-
-func TestPodmanHostGatewaySupported(t *testing.T) {
-	tests := []struct {
-		version string
-		want    bool
-	}{
-		{"4.7.0", true},
-		{"4.7", true},
-		{"4.9.4", true},
-		{"5.0.1", true},
-		{"4.6.9", false},
-		{"3.4.0", false},
-		{"", true},        // unparseable: don't warn
-		{"garbage", true}, // unparseable: don't warn
-		{"4", true},       // no minor: don't warn
-	}
-	for _, tc := range tests {
-		if got := podmanHostGatewaySupported(tc.version); got != tc.want {
-			t.Errorf("podmanHostGatewaySupported(%q) = %v, want %v", tc.version, got, tc.want)
-		}
-	}
-}
-
-func TestPodmanPastaDefault(t *testing.T) {
-	tests := []struct {
-		version string
-		want    bool
-	}{
-		{"5.0.0", true},
-		{"5.0", true},
-		{"5.4.1", true},
-		{"6.0.0", true},
-		{"4.9.4", false},
-		{"4.7.0", false},
-		{"3.4.0", false},
-		{"", true},        // unparseable: don't warn
-		{"garbage", true}, // unparseable: don't warn
-		{"5", true},       // no minor: don't warn
-	}
-	for _, tc := range tests {
-		if got := podmanPastaDefault(tc.version); got != tc.want {
-			t.Errorf("podmanPastaDefault(%q) = %v, want %v", tc.version, got, tc.want)
-		}
-	}
-}
-
-func TestHostLoopbackBackendLikely(t *testing.T) {
-	tests := []struct {
-		rt   ContainerRuntime
-		want bool
-	}{
-		{ContainerRuntime{Bin: "docker"}, true},                   // non-podman: always true
-		{ContainerRuntime{}, true},                                // zero value = docker
-		{ContainerRuntime{Bin: "podman", Version: "5.0.0"}, true}, // pasta default
-		{ContainerRuntime{Bin: "podman", Version: "6.1.0"}, true},
-		{ContainerRuntime{Bin: "podman", Version: "4.9.4"}, false}, // pre-5.0: warn
-		{ContainerRuntime{Bin: "podman", Version: ""}, true},       // unparseable: don't warn
-	}
-	for _, tc := range tests {
-		if got := tc.rt.HostLoopbackBackendLikely(); got != tc.want {
-			t.Errorf("HostLoopbackBackendLikely(%+v) = %v, want %v", tc.rt, got, tc.want)
-		}
 	}
 }

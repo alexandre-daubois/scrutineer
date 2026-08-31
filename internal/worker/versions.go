@@ -37,23 +37,23 @@ func RuntimeOf(r SkillRunner) ContainerRuntime {
 // so the settings page can bound how long it waits.
 func RuntimeServerVersion(ctx context.Context, rt ContainerRuntime) string {
 	if rt.Bin == runtimeApple {
-		out, err := exec.CommandContext(ctx, rt.bin(), "--version").Output()
+		out, err := exec.CommandContext(ctx, runtimeBin(rt), "--version").Output()
 		if err != nil {
 			return ""
 		}
-		v := firstDottedVersion(string(out))
+		v := versionRe.FindString(string(out))
 		if v == "" {
 			return ""
 		}
 		// Display the product identity ("Apple container"), not just the bare
 		// executable, so the settings row is traceable to --runtime apple.
-		return "Apple " + rt.bin() + " " + v
+		return "Apple " + runtimeBin(rt) + " " + v
 	}
 	format := "{{.Server.Version}}"
 	if rt.Bin == runtimePodman {
 		format = "{{.Version}}"
 	}
-	out, err := exec.CommandContext(ctx, rt.bin(), "version", "--format", format).Output()
+	out, err := exec.CommandContext(ctx, runtimeBin(rt), "version", "--format", format).Output()
 	if err != nil {
 		return ""
 	}
@@ -61,7 +61,7 @@ func RuntimeServerVersion(ctx context.Context, rt ContainerRuntime) string {
 	if v == "" {
 		return ""
 	}
-	return rt.bin() + " " + v
+	return runtimeBin(rt) + " " + v
 }
 
 // RunnerImageRevision returns the git commit the runner image was built from,
@@ -77,7 +77,7 @@ func RunnerImageRevision(ctx context.Context, rt ContainerRuntime, image string)
 		return ""
 	}
 	const format = `{{index .Config.Labels "org.opencontainers.image.revision"}}`
-	out, err := exec.CommandContext(ctx, rt.bin(), "image", "inspect", "--format", format, "--", image).Output()
+	out, err := exec.CommandContext(ctx, runtimeBin(rt), "image", "inspect", "--format", format, "--", image).Output()
 	if err != nil {
 		return ""
 	}
@@ -131,14 +131,14 @@ func QueryRunnerToolVersions(ctx context.Context, rt ContainerRuntime, image, ha
 	if image == "" {
 		return RunnerToolVersions{}
 	}
-	args := rt.runArgs("--rm")
-	if rt.supportsPullNever() {
+	args := runtimeRunArgs(rt, "--rm")
+	if supportsPullNever(rt) {
 		args = append(args, "--pull", "never")
 	} else if !imageExistsLocally(ctx, rt, image) {
 		return RunnerToolVersions{}
 	}
 	args = append(args, "--entrypoint", "sh", "--", image, "-c", queryToolsScript(harnessBin))
-	out, err := exec.CommandContext(ctx, rt.bin(), args...).Output()
+	out, err := exec.CommandContext(ctx, runtimeBin(rt), args...).Output()
 	if err != nil {
 		return RunnerToolVersions{}
 	}
@@ -146,7 +146,8 @@ func QueryRunnerToolVersions(ctx context.Context, rt ContainerRuntime, image, ha
 }
 
 // versionRe matches the first dotted-numeric version token in a string, so
-// "zizmor 1.26.1" and "2.1.123 (Claude Code)" both reduce to the bare number.
+// "zizmor 1.26.1", "2.1.123 (Claude Code)" and "container CLI version 1.2.3
+// (build: release)" all reduce to the bare number.
 var versionRe = regexp.MustCompile(`\d+\.\d+[\w.\-+]*`)
 
 func parseToolVersions(out string) RunnerToolVersions {

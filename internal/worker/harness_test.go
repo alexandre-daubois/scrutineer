@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -342,5 +343,52 @@ func TestSkillJobPromptHonoursToolSet(t *testing.T) {
 	auditPrompt := ClaudeHarness{}.Prompt(audit.toJob("", 0, ""))
 	if !strings.Contains(auditPrompt, "validate-report") {
 		t.Errorf("shell-capable skill lost the API route:\n%s", auditPrompt)
+	}
+}
+
+// TestCappedEffort pins the one backend whose effort ladder is shorter than
+// scrutineer's: copilot stops at xhigh, everything else takes "max" unchanged.
+func TestCappedEffort(t *testing.T) {
+	copilot, err := HarnessByName("copilot")
+	if err != nil {
+		t.Fatalf("HarnessByName(copilot): %v", err)
+	}
+	tests := []struct {
+		name    string
+		harness Harness
+		effort  string
+		want    string
+	}{
+		{"copilot max is capped", copilot, "max", "xhigh"},
+		{"copilot xhigh untouched", copilot, "xhigh", "xhigh"},
+		{"copilot high untouched", copilot, "high", "high"},
+		{"copilot empty untouched", copilot, "", ""},
+		{"claude keeps max", ClaudeHarness{}, "max", "max"},
+		{"codex keeps max", CodexHarness{}, "max", "max"},
+		{"opencode keeps max", OpencodeHarness{}, "max", "max"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CappedEffort(tc.harness, tc.effort); got != tc.want {
+				t.Errorf("CappedEffort(%s, %q) = %q, want %q", HarnessName(tc.harness), tc.effort, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCopilotArgsNeverCarryMaxEffort runs the cap through the argv the
+// container actually execs, not through CappedEffort directly.
+func TestCopilotArgsNeverCarryMaxEffort(t *testing.T) {
+	sj := SkillJob{Name: "demo", WorkRoot: t.TempDir(), OutputFile: "report.json"}
+	args := ContainerRunner{Harness: CopilotHarness{}, Effort: "max"}.harnessArgv(sj)
+	i := slices.Index(args, "--effort")
+	if i < 0 || i == len(args)-1 {
+		t.Fatalf("copilot argv carries no --effort value: %v", args)
+	}
+	if args[i+1] != "xhigh" {
+		t.Errorf("copilot --effort = %q, want xhigh", args[i+1])
+	}
+	if slices.Contains(args, "max") {
+		t.Errorf("copilot argv still carries scrutineer's max: %v", args)
 	}
 }

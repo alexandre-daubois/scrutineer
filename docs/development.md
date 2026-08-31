@@ -14,7 +14,8 @@
 | `internal/skills/` | SKILL.md parser + loader for local dirs and remote git repos |
 | `internal/worker/` | one job kind (JobSkill) and the runner plumbing |
 | `internal/worker/claude.go` | LocalClaude runner (bare-metal) |
-| `internal/worker/runtime.go` | ContainerRuntime + DetectRuntime (docker / rootless podman selection) |
+| `internal/worker/harness.go` | backend registry aliases over the `harness` module, plus the per-backend effort cap |
+| `internal/worker/runtime.go` | ContainerRuntime alias over `harness/container`, engine traits and bind-mount spec |
 | `internal/worker/container.go` | ContainerRunner (ephemeral container per scan; docker or podman) |
 | `internal/worker/clone.go` | git clone/fetch helpers, URL validation |
 | `internal/worker/skill.go` | doSkill: stage skill + context, invoke claude, dispatch output to the right parser |
