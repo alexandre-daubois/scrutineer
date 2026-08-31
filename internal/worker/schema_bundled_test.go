@@ -73,6 +73,17 @@ func TestBundledSchemas_compileAndAcceptSamples(t *testing.T) {
 			`{"error":"context.json missing scrutineer block"}`,
 		},
 		{
+			"../../skills/bandit/schema.json",
+			`{"findings":[{"id":"F1","title":"B608 hardcoded_sql_expressions",
+			  "severity":"Medium","confidence":"low","cwe":"CWE-89",
+			  "location":"app.py:9","locations":["app.py:9"],
+			  "trace":"Possible SQL injection vector through string-based query construction.",
+			  "rating":"Medium from bandit test B608",
+			  "references":[{"url":"https://bandit.readthedocs.io/en/1.9.4/plugins/b608_hardcoded_sql_expressions.html",
+			    "summary":"bandit docs: B608","tags":"docs"}]}],
+			  "notes":"bandit could not read 1 file(s): bad.py (syntax error while parsing AST from file)"}`,
+		},
+		{
 			"../../skills/repo-overview/schema.json",
 			`{"version":"dev","path":"/x",
 			  "languages":[{"name":"Go","category":"language"}],
@@ -536,6 +547,9 @@ func TestBundledSchemas_rejectBadShapes(t *testing.T) {
 	}{
 		{"../../skills/triage/schema.json", `{"triggered":"not-a-list"}`, "/triggered"},
 		{"../../skills/triage/schema.json", `{"triggered":["Bad Name"]}`, "/triggered/0"},
+		{"../../skills/bandit/schema.json",
+			`{"findings":[{"id":"F1","title":"B608","severity":"Severe","location":"app.py:9"}]}`,
+			"/findings/0/severity"},
 		{"../../skills/repo-overview/schema.json", `{"languages":"go"}`, "/languages"},
 		{"../../skills/sbom/schema.json", `{"bomFormat":"SPDX","specVersion":"1.5"}`, "/bomFormat"},
 		{"../../skills/sbom/schema.json", `{"specVersion":"1.5"}`, "bomFormat"},

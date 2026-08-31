@@ -103,7 +103,7 @@ func TestQueryRunnerToolVersions_AppleSkipsMissingImage(t *testing.T) {
 func TestQueryRunnerToolVersions_AppleRunsLocalImageWithoutPullNever(t *testing.T) {
 	logPath := fakeContainer(t)
 	got := QueryRunnerToolVersions(context.Background(), ContainerRuntime{Bin: "apple"}, "present:latest", "claude")
-	if got.Zizmor != "1.2.3" || got.Semgrep != "4.5.6" || got.Harness != "7.8.9" {
+	if got.Zizmor != "1.2.3" || got.Semgrep != "4.5.6" || got.Bandit != "0.1.2" || got.Harness != "7.8.9" {
 		t.Fatalf("QueryRunnerToolVersions(local image) = %+v", got)
 	}
 	log := readFakeContainerLog(t, logPath)
@@ -133,6 +133,7 @@ fi
 if [ "$1" = "run" ]; then
   echo "zizmor=zizmor 1.2.3"
   echo "semgrep=4.5.6"
+  echo "bandit=bandit 0.1.2"
   echo "harness=some-cli 7.8.9 (build abc)"
   exit 0
 fi

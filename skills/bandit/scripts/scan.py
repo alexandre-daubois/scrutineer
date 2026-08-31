@@ -11,7 +11,7 @@ still prefixes each one with `./`, which is stripped here so a location reads
 Results are grouped by (test_id, issue_text): a plugin interpolates the
 offending name into its message when it considers the matches distinct, so an
 identical message is bandit's own signal that the hits are the same issue.
-Each group becomes one finding carrying every file:line in `locations` (#191).
+Each group becomes one finding carrying every file:line in `locations`.
 """
 import json
 import os
@@ -55,6 +55,7 @@ EXCLUDES = [
     "*/specs",
     "*/test_*.py",
     "*_test.py",
+    "*/conftest.py",
 ]
 
 

@@ -8,6 +8,7 @@ should_find:
     path: app.py
     required: true
 should_not_find:
+  # bandit's own scale stops at HIGH, so no hit may reach Critical.
   - finding: hardcoded_sql_expressions
-    cwe: CWE-89
-    path: README.md
+    severity: Critical
+    path: app.py

@@ -63,9 +63,12 @@ func TestBanditScriptGroupsHitsPerTestID(t *testing.T) {
 
 	// The exclude list has to reach bandit, or test and spec code lands in the
 	// findings table.
-	argv := readFile(t, argvLog)
-	for _, want := range []string{"*_test.py", "*/tests", "__pycache__"} {
-		if !strings.Contains(argv, want) {
+	argv, err := os.ReadFile(argvLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"*_test.py", "*/tests", "*/conftest.py", "__pycache__"} {
+		if !strings.Contains(string(argv), want) {
 			t.Errorf("bandit argv %q missing exclude %q", argv, want)
 		}
 	}
@@ -154,15 +157,6 @@ func runBanditAdapter(t *testing.T, root string, onPath bool) banditReport {
 		t.Fatalf("decode report: %v\n%s", err, out)
 	}
 	return report
-}
-
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(b)
 }
 
 const fakeBanditScript = `#!/usr/bin/env bash
