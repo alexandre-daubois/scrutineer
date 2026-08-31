@@ -676,6 +676,13 @@ func (d ContainerRunner) Backend() string { return HarnessName(d.harness()) }
 // harness returns the agent CLI to exec inside the container, defaulting
 // to claude-code when none is set so the zero ContainerRunner{} keeps its
 // historical behaviour.
+func (d ContainerRunner) harness() Harness { //nolint:ireturn // nil-default accessor; the field IS the interface
+	if d.Harness != nil {
+		return d.Harness
+	}
+	return ClaudeHarness{}
+}
+
 // harnessArgv builds the in-container agent command: the backend binary plus
 // the args its module derives from the resolved job.
 func (d ContainerRunner) harnessArgv(sj SkillJob) []string {
@@ -683,13 +690,6 @@ func (d ContainerRunner) harnessArgv(sj SkillJob) []string {
 	job := sj.toJob(d.Effort, d.MaxTurns, d.ModelBaseURL)
 	job.Effort = CappedEffort(h, job.Effort)
 	return append([]string{h.Binary()}, h.Args(job)...)
-}
-
-func (d ContainerRunner) harness() Harness { //nolint:ireturn // nil-default accessor; the field IS the interface
-	if d.Harness != nil {
-		return d.Harness
-	}
-	return ClaudeHarness{}
 }
 
 // profileGuidePath returns the profile's on-disk PROFILE.md if present.
