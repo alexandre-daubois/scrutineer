@@ -64,6 +64,23 @@
     },
     {
       "customType": "regex",
+      "description": "Update the bandit container-image pins and the documented version",
+      "managerFilePatterns": [
+        "/^Dockerfile$/",
+        "/^Dockerfile\\.runner$/",
+        "/^threatmodel\\.md$/"
+      ],
+      "matchStrings": [
+        "bandit==(?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "ARG BANDIT_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "packageNameTemplate": "bandit",
+      "depNameTemplate": "bandit",
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
       "description": "Update the zizmor container-image pins",
       "managerFilePatterns": [
         "/^Dockerfile$/",
@@ -110,6 +127,12 @@
     {
       "matchManagers": ["custom.regex"],
       "minimumReleaseAge": "7 days"
+    },
+    {
+      "description": "Keep the container-image and documented bandit pins synchronized",
+      "matchPackageNames": ["bandit"],
+      "groupName": "bandit",
+      "minimumGroupSize": 3
     },
     {
       "description": "Keep the workflow and container-image zizmor pins synchronized",

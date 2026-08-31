@@ -62,7 +62,7 @@ A repository that wants code execution only needs a `CLAUDE.md` saying "before a
 
 Bare-metal (`--no-container`): runs as the operator with their full environment — the findings database at `/data/scrutineer.db`, every other cloned repo under `/data/repo-*`, and `ANTHROPIC_API_KEY` are all in reach, and because all jobs share one filesystem a hostile repo scanned on Monday can patch the source of a clean repo scanned on Tuesday. Containerised (the default): runs as the non-root `scrutineer` user with `--cap-drop ALL`, a `/tmp` tmpfs, and `--rm`, and only the per-scan workspace bind-mounted at `/work` — the findings database and other repos are never mounted and each scan is ephemeral, so the cross-scan patching and database/other-repo reach above are cut off. What a hostile repo that achieves in-container exec still gets is `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` (passed into the scan's environment so the model can authenticate) and, in the default non-hardened profile, cooperative egress (T13); the shared kernel (boundary 4) is the residual the container cannot close, and `--hardened` shrinks the rootfs and egress surface further.
 
-The same applies to `brief`, `git-pkgs`, `semgrep`, and `zizmor`, which all parse attacker-controlled files without being security boundaries.
+The same applies to `brief`, `git-pkgs`, `semgrep`, `bandit`, and `zizmor`, which all parse attacker-controlled files without being security boundaries.
 
 Mitigation (implemented): the analysis stage runs as an ephemeral container per scan — `SkillRunner` with a `ContainerRunner` implementation (docker, podman, or Apple's `container`) — started by the worker, which runs on the host and calls the container runtime directly, without mounting a runtime socket (T12). Only the per-scan workspace is mounted, the container is non-root with `--cap-drop ALL` and `--rm`, and egress is routed through the host allowlisting proxy (T13), enforced by a per-scan `--internal` network under `--hardened`. Apple's `container` runtime supports `--hardened` too: each container is its own lightweight VM (the VM boundary is the isolation), and `container network create --internal` is a vmnet host-only network that delivers the same per-scan egress enforcement, proven fail-closed before each scan. The one flag it cannot set is `--security-opt no-new-privileges`, for which the per-container VM boundary substitutes; `--hardened-runtime-only` is a rootless-podman concept and is refused there. One piece of the original aspiration is still unmet: `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` is passed into the container so the model can authenticate, so the credential stays readable by in-container code — injecting it at the proxy rather than passing it ambiently (T13) is the remaining hardening.
 
@@ -120,12 +120,12 @@ No rate limiting on `POST /repositories`, no cap on clone size, no timeout on th
 
 ### T11: Image supply chain (partially mitigated)
 
-Tool versions are pinned: `claude-code@2.1.241`, `semgrep==1.167.0`, `git-pkgs@v0.19.0`, `zizmor@1.26.1`. The final stage is `debian:trixie-slim`; the `golang:1.27.0-trixie` and `rust:1.96-trixie` builder stages are pinned by sha256 digest. The container runs as non-root user `runner`. The runner image is built in CI, smoke-tested, and published to GHCR; users pull a known-good artifact rather than rebuilding against live registries.
+Tool versions are pinned: `claude-code@2.1.241`, `semgrep==1.167.0`, `bandit==1.9.4`, `git-pkgs@v0.19.0`, `zizmor@1.26.1`. The final stage is `debian:trixie-slim`; the `golang:1.27.0-trixie` and `rust:1.96-trixie` builder stages are pinned by sha256 digest. The container runs as non-root user `runner`. The runner image is built in CI, smoke-tested, and published to GHCR; users pull a known-good artifact rather than rebuilding against live registries.
 
 Supply-chain surface in the final stage:
 - `apt` pulls from Debian's official mirrors plus the GitHub CLI repo at `cli.github.com/packages` (signed-by keyring under `/etc/apt/keyrings/`). `gh` is used at scan time by the `fork` and `report-upstream` skills.
 - `claude` is the glibc tarball from `github.com/anthropics/claude-code` releases, SHA256-pinned per architecture. Renovate maps each current digest to its architecture-specific filename using upstream's `SHASUMS256.txt`, then copies the corresponding digest from the new release's manifest. This pipeline does not verify the manifest's accompanying signature, so the pin detects tarball bytes that differ from the digest selected at update time but does not protect against a compromised upstream release at selection time. CI asserts that all four version pins agree, verifies each downloaded tarball against its selected digest, and smoke-tests that the installed binary runs.
-- `semgrep` is installed via `pip` into a venv at `/opt/semgrep` (PEP 668 dodge without `--break-system-packages`). `pip` is therefore present, scoped to that venv.
+- `semgrep` and `bandit` are installed via `pip` into venvs at `/opt/semgrep` and `/opt/bandit` (PEP 668 dodge without `--break-system-packages`), one each so their pins move independently. `pip` is therefore present, scoped to those venvs.
 - `curl` remains on PATH; used at build time to fetch the claude tarball and apt keyrings, and at scan time inside the egress-proxied container. `npm` is not installed.
 
 Residual: `apt` and `pip` installs are pinned by version, not by content hash. A compromised release republished at the same version on Debian, sury, or PyPI would still land. Hash-pinned lockfiles for `pip` are tracked in #56.
@@ -214,9 +214,9 @@ GORM usage is consistently parameterised; no `Raw`, no string-built `Where`, and
 - [x] `safeURL` validation on HTMLURL and IconURL before storing (T7).
 - [x] `0700` on the data directory at startup (T8).
 - [x] `toolchain go1.27.0` in go.mod so host builds match the image (T10).
-- [x] Pin tool versions in Dockerfile: claude-code, semgrep, git-pkgs, brief, zizmor (T11).
+- [x] Pin tool versions in Dockerfile: claude-code, semgrep, bandit, git-pkgs, brief, zizmor (T11).
 - [x] Non-root `USER runner` in Dockerfile (T11).
-- [x] Trim final Docker stage: `npm` absent, `pip` scoped to the `/opt/semgrep` venv, `curl` retained for build- and scan-time fetches (T11).
+- [x] Trim final Docker stage: `npm` absent, `pip` scoped to the `/opt/semgrep` and `/opt/bandit` venvs, `curl` retained for build- and scan-time fetches (T11).
 - [x] Per-job ephemeral runner (T1): scrutineer execs the runtime directly (no socket), with `--runtime podman` for a rootless, non-root-equivalent child (T12).
 - [ ] URL allowlist at enqueue time; block RFC1918 redirects in HTTP client (T4).
 - [ ] Finding provenance tagging: source job on each finding row (T5).

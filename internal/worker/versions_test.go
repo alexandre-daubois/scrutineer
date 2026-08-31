@@ -11,6 +11,7 @@ import (
 func TestParseToolVersions(t *testing.T) {
 	out := "zizmor=zizmor 1.26.1\n" +
 		"semgrep=1.167.0\n" +
+		"bandit=bandit 1.9.4\n" +
 		"harness=2.1.123 (Claude Code)\n"
 	got := parseToolVersions(out)
 	if got.Zizmor != "1.26.1" {
@@ -18,6 +19,23 @@ func TestParseToolVersions(t *testing.T) {
 	}
 	if got.Semgrep != "1.167.0" {
 		t.Errorf("Semgrep = %q, want 1.167.0", got.Semgrep)
+	}
+	if got.Bandit != "1.9.4" {
+		t.Errorf("Bandit = %q, want 1.9.4", got.Bandit)
+	}
+	if got.Harness != "2.1.123" {
+		t.Errorf("Harness = %q, want 2.1.123", got.Harness)
+	}
+}
+
+func TestParseToolVersions_banditInterpreterLine(t *testing.T) {
+	// `bandit --version` prints the interpreter it runs under on a second
+	// line that carries an "=" of its own. queryToolsScript keeps only the
+	// first line; this pins that the trailing line cannot displace a real
+	// key even if it reaches the parser.
+	got := parseToolVersions("bandit=bandit 1.9.4\n  python version = 3.12.9 (main)\nharness=2.1.123\n")
+	if got.Bandit != "1.9.4" {
+		t.Errorf("Bandit = %q, want 1.9.4", got.Bandit)
 	}
 	if got.Harness != "2.1.123" {
 		t.Errorf("Harness = %q, want 2.1.123", got.Harness)
@@ -38,7 +56,7 @@ func TestQueryToolsScript_usesHarnessBinary(t *testing.T) {
 
 func TestParseToolVersions_missingTools(t *testing.T) {
 	// A tool that is absent prints an empty value after the "=".
-	got := parseToolVersions("zizmor=\nsemgrep=\nharness=\n")
+	got := parseToolVersions("zizmor=\nsemgrep=\nbandit=\nharness=\n")
 	if got != (RunnerToolVersions{}) {
 		t.Errorf("expected zero value for empty versions, got %+v", got)
 	}
