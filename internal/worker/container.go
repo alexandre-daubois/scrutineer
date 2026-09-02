@@ -178,14 +178,14 @@ func proxySidecarName(key string) string {
 // sidecar container instead of the in-process host proxy. True only for rootless
 // podman under --hardened: there the per-scan --internal network cannot reach
 // the host proxy across the pasta/slirp4netns boundary (see docs/podman.md), so
-// the proxy must live on the network with the scan. docker and
-// rootful podman keep the host-proxy path unchanged, and so does Apple's
+// the proxy must live on the network with the scan. docker, Docker Desktop and
+// rootful podman keep the host-proxy path, and so does Apple's
 // container -- its CLI has neither `--network podman` nor `network connect`, so it
 // must not take the sidecar path even though it still needs the per-scan
-// --internal verification (see Runtime.NeedsEgressSidecar vs
+// --internal verification (see EgressSidecarSupported vs
 // Runtime.NeedsHardenedNetVerify).
 func (d ContainerRunner) usesEgressSidecar() bool {
-	return d.Hardened && d.Runtime.NeedsEgressSidecar()
+	return d.Hardened && EgressSidecarSupported(d.Runtime)
 }
 
 func (d ContainerRunner) image() string {
@@ -907,9 +907,10 @@ func (d ContainerRunner) setupHardenedNetwork(sj SkillJob, image string) (harden
 		hn.proxyName = proxySidecarName(sj.isolationKey())
 	}
 
-	// docker's bridge --internal is trusted, and so is rootful podman's (netavark
-	// + a bridge in the host netns, gateway on the host -- docker's model).
-	// Rootless podman and Apple need per-scan proof; see NeedsHardenedNetVerify.
+	// Linux docker's bridge --internal is trusted, and so is rootful podman's
+	// (netavark + a bridge in the host netns, gateway on the host -- docker's
+	// model). Rootless podman, Docker Desktop and Apple need per-scan proof; see
+	// NeedsHardenedNetVerify.
 	if d.Runtime.NeedsHardenedNetVerify() {
 		if err := d.verifyHardenedNetwork(hn, image); err != nil {
 			cleanup()

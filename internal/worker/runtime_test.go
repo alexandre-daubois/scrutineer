@@ -26,23 +26,32 @@ func TestRuntimeBin(t *testing.T) {
 // TestContainerRuntimeEnginePredicates pins the keep-id, hardened-network and
 // egress-sidecar matrix the scan argv branches on. The predicates live in the
 // dependency now, and the last two are security boundaries, so a bump that
-// widens or drops one has to fail here.
+// widens or drops one has to fail here. The docker rows carry the engine version
+// DetectRuntime always fills in: with it empty the dependency reads any
+// non-Linux host as Docker Desktop, which would make the row's answer depend on
+// where the test runs.
 func TestContainerRuntimeEnginePredicates(t *testing.T) {
 	tests := []struct {
-		name          string
-		rt            ContainerRuntime
-		wantKeepID    bool
-		wantNetVerify bool
-		wantSidecar   bool
+		name            string
+		rt              ContainerRuntime
+		wantKeepID      bool
+		wantNetVerify   bool
+		wantSidecar     bool
+		wantSidecarPath bool
 	}{
-		{"docker zero value", ContainerRuntime{}, false, false, false},
-		{"docker explicit", ContainerRuntime{Bin: "docker"}, false, false, false},
-		{"docker rootless flag ignored", ContainerRuntime{Bin: "docker", Rootless: true}, false, false, false},
-		{"rootful podman", ContainerRuntime{Bin: "podman"}, false, false, false},
-		{"rootless podman", ContainerRuntime{Bin: "podman", Rootless: true}, true, true, true},
+		{"docker empty bin", ContainerRuntime{Version: "27.0"}, false, false, false, false},
+		{"docker explicit", ContainerRuntime{Bin: "docker", Version: "27.0"}, false, false, false, false},
+		{"docker rootless flag ignored", ContainerRuntime{Bin: "docker", Rootless: true, Version: "27.0"}, false, false, false, false},
+		// Docker Desktop cannot reach the host proxy across --internal either, so
+		// the dependency asks for a sidecar, but the egress leg startProxySidecar
+		// attaches is podman-only: the scan keeps the host-proxy path and the
+		// per-scan proxy-reach probe is what refuses the run.
+		{"docker desktop", ContainerRuntime{Bin: "docker", DockerDesktop: true, Version: "27.0"}, false, true, true, false},
+		{"rootful podman", ContainerRuntime{Bin: "podman"}, false, false, false, false},
+		{"rootless podman", ContainerRuntime{Bin: "podman", Rootless: true}, true, true, true, true},
 		// Apple has no podman subuid remap and keeps the in-process host
 		// proxy, but its --internal network is still proven per scan.
-		{"apple", ContainerRuntime{Bin: "apple"}, false, true, false},
+		{"apple", ContainerRuntime{Bin: "apple"}, false, true, false, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -55,12 +64,15 @@ func TestContainerRuntimeEnginePredicates(t *testing.T) {
 			if got := tc.rt.NeedsEgressSidecar(); got != tc.wantSidecar {
 				t.Errorf("NeedsEgressSidecar = %v, want %v", got, tc.wantSidecar)
 			}
+			if got := EgressSidecarSupported(tc.rt); got != tc.wantSidecarPath {
+				t.Errorf("EgressSidecarSupported = %v, want %v", got, tc.wantSidecarPath)
+			}
 			// The sidecar argv stays gated on --hardened.
 			if got := (ContainerRunner{Runtime: tc.rt}).usesEgressSidecar(); got {
 				t.Errorf("usesEgressSidecar without --hardened = %v, want false", got)
 			}
-			if got := (ContainerRunner{Runtime: tc.rt, Hardened: true}).usesEgressSidecar(); got != tc.wantSidecar {
-				t.Errorf("usesEgressSidecar with --hardened = %v, want %v", got, tc.wantSidecar)
+			if got := (ContainerRunner{Runtime: tc.rt, Hardened: true}).usesEgressSidecar(); got != tc.wantSidecarPath {
+				t.Errorf("usesEgressSidecar with --hardened = %v, want %v", got, tc.wantSidecarPath)
 			}
 		})
 	}

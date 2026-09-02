@@ -225,8 +225,8 @@ is that bottom row, which is two things, both network:
 
 So: prefer `--hardened` under rootless (the sidecar makes it work on a modern
 pasta/slirp4netns backend); fall back to `--hardened-runtime-only` + SELinux
-where it can't, and rootful podman/docker remains a route to full enforced egress
-without the host-loopback-forwarding requirement.
+where it can't, and rootful podman or Linux docker remains a route to full
+enforced egress without the host-loopback-forwarding requirement.
 
 ## SELinux and bind-mount file passing
 

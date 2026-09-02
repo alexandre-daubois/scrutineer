@@ -1210,7 +1210,7 @@ func resolveScanNetworking(rt worker.ContainerRuntime, f *flags, log *slog.Logge
 // sidecar) for docker, rootful podman, and any non-rootless run -- those keep
 // the in-process host proxy.
 func resolveEgressSidecar(rt worker.ContainerRuntime, f *flags, allow []string, token string, log *slog.Logger) (worker.EgressSidecarConfig, error) {
-	if !rt.NeedsEgressSidecar() {
+	if !worker.EgressSidecarSupported(rt) {
 		return worker.EgressSidecarConfig{}, nil
 	}
 	// Fail fast if the runner image lacks the scrutineer binary the sidecar runs,

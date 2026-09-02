@@ -64,6 +64,16 @@ func supportsPullNever(rt ContainerRuntime) bool { return rt.Bin != runtimeApple
 // `--security-opt no-new-privileges` hardening flag.
 func supportsNoNewPrivileges(rt ContainerRuntime) bool { return rt.Bin != runtimeApple }
 
+// EgressSidecarSupported narrows harness's Runtime.NeedsEgressSidecar to the
+// engine the sidecar path can actually serve. That predicate also covers Docker
+// Desktop, whose --internal network cannot reach the host proxy either, but
+// startProxySidecar attaches the egress leg with `network connect podman`, a
+// netavark bridge with no docker equivalent. Docker Desktop stays on the
+// host-proxy path, where the per-scan proxy-reach probe refuses the scan.
+func EgressSidecarSupported(rt ContainerRuntime) bool {
+	return rt.NeedsEgressSidecar() && rt.Bin == runtimePodman && rt.Rootless
+}
+
 // bindMount builds a `-v` value "src:dst[:opts]" for a runner bind mount,
 // appending the SELinux relabel option "z" when relabel is true. opts carries
 // any non-SELinux options (e.g. "ro"); "z" joins that comma-separated group, so
