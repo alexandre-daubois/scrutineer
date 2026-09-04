@@ -284,6 +284,23 @@ func TestValidateOpencodeRejectsManagedProxyEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoad_hostSkills(t *testing.T) {
+	c, err := Load(write(t, "host_skills:\n  - verify\n  - critic\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.HostSkills, []string{"verify", "critic"}) {
+		t.Errorf("host_skills: %v", c.HostSkills)
+	}
+	c, err = Load(write(t, "addr: 127.0.0.1:1\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.HostSkills) != 0 {
+		t.Errorf("host_skills omitted: %v, want empty", c.HostSkills)
+	}
+}
+
 func TestLoad_noContainerAlias(t *testing.T) {
 	// no_docker is the retained pre-rename alias; Load folds it into NoContainer.
 	aliasOnly, err := Load(write(t, "no_docker: true\n"))

@@ -1479,7 +1479,7 @@ func (w *Worker) stageWorkspace(ctx context.Context, workRoot, skillDir string, 
 		return err
 	}
 	return stageWorkspaceWithInputs(
-		workRoot, skillDir, w.APIBase, w.ForkOrg, w.metadataDir(), scan, skill, recon, novelty, controls,
+		workRoot, skillDir, w.apiBaseFor(skill.Name), w.ForkOrg, w.metadataDir(), scan, skill, recon, novelty, controls,
 	)
 }
 

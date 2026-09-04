@@ -89,6 +89,14 @@
 # retained back-compat alias for this key.)
 # no_container: false
 
+# Run the listed skills with claude directly on the host (no isolation) while
+# every other skill keeps its container. Meant for a codebase whose build
+# toolchain only exists on the host. Host runs skip the egress proxy and reach
+# the skill API on the loopback address. Refused with hardened: true and with
+# non-claude backends, like no_container; redundant when no_container is set.
+# host_skills:
+#   - verify
+
 # Strict sandbox mode. Forces the container runner (no --no-container fallback),
 # restricts the egress allowlist to *.anthropic.com plus the runtime's host
 # endpoint, mounts the container rootfs read-only, sets no-new-privileges, and

@@ -23,7 +23,8 @@ changes *how strongly* that boundary holds, not what runs inside it.
 Three configurations exist, weakest to strongest:
 
 - `--no-container` — no container; the workload runs on the host as the operator.
-  Least isolation (unchanged, out of scope for this document).
+  Least isolation (unchanged, out of scope for this document). The skills listed
+  in `host_skills` sit at this level too, whichever runtime the rest use.
 - `--runtime docker` *(default)* or rootful podman — container-root maps to a
   uid the daemon runs as; the daemon/socket is root-equivalent.
 - `--runtime podman` **rootless** — daemonless, and container-root maps to an

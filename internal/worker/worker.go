@@ -385,6 +385,14 @@ func (w *Worker) publish(scanID, repoID uint, name, data string) {
 	}
 }
 
+// apiBaseFor picks the skill API address context.json advertises to a job.
+func (w *Worker) apiBaseFor(skillName string) string {
+	if r, ok := w.Runner.(HostSplitRunner); ok && r.runsOnHost(skillName) {
+		return r.HostAPIBase
+	}
+	return w.APIBase
+}
+
 // workRoot returns the per-scan workspace directory under DataDir.
 func (w *Worker) workRoot(scanID uint) string {
 	return filepath.Join(w.DataDir, fmt.Sprintf("scan-%d", scanID))

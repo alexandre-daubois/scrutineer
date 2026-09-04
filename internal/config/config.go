@@ -55,6 +55,11 @@ type Config struct {
 	// (coalesced in Load).
 	NoContainer *bool `yaml:"no_container"`
 	NoDocker    *bool `yaml:"no_docker"`
+	// HostSkills names skills that run claude directly on the host (no
+	// isolation) while every other skill keeps the containerised runner.
+	// Config-file-only. Refused with --hardened and with non-claude backends,
+	// like no_container.
+	HostSkills []string `yaml:"host_skills"`
 	// Runtime selects the container engine: "docker" (default), "podman", or
 	// "apple" (Apple's container runtime, experimental). Empty leaves the
 	// built-in default (docker). Rootless podman is detected automatically and gets

@@ -54,7 +54,7 @@ The executable does not bundle Docker, Podman, or Apple's `container` CLI. Scrut
 
 Large batches pause automatically at an account-level rate limit or quota wall. When claude-code is running on a subscription token it emits a `rate_limit_event` carrying the reset time, and scrutineer re-queues the paused batch after that reset; API-key accounts and the codex/opencode/copilot backends report the error without a reset time, so those batches stay paused for manual resume from the `/usage` page, which also shows the most recent per-window status.
 
-Scrutineer uses Docker by default: each scan runs in an ephemeral container with a read-only source mount and an egress allowlist proxy. The paired runner image (`ghcr.io/alpha-omega-security/scrutineer-runner`) is pulled on first use, so the first scan is slower while it downloads. A host without the selected runtime fails startup rather than silently weakening isolation; `--no-container` is the explicit, Claude-only escape hatch for running directly on a trusted host.
+Scrutineer uses Docker by default: each scan runs in an ephemeral container with a read-only source mount and an egress allowlist proxy. The paired runner image (`ghcr.io/alpha-omega-security/scrutineer-runner`) is pulled on first use, so the first scan is slower while it downloads. A host without the selected runtime fails startup rather than silently weakening isolation; `--no-container` is the explicit, Claude-only escape hatch for running directly on a trusted host. To take only some skills out of the container (say `verify` for a project whose build toolchain only exists on the host, while `triage` and the deep-dive skills keep their profile containers), list them under `host_skills` in the config file: those run claude on the host with no egress proxy and reach the skill API on the loopback address, and the option is refused under `--hardened` and with non-claude backends, like `--no-container`.
 
 Click **Add repository** in the sidebar, paste a git HTTPS URL, and scrutineer enqueues the `triage` skill. To scan a maintained branch instead of the default, fill the **Branch** field (it suggests the remote's branches as you type and also accepts a tag or commit), or append a `/tree/<branch>` suffix to the URL; the suffix also works one-per-line when bulk-importing. Triage then enqueues the rest of the pipeline in parallel. Metadata and package lookups finish in seconds; the security deep-dive takes a few minutes depending on repo size. Open the repo page and switch to the Scans tab to watch progress, or wait for the Findings tab to fill in.
 
@@ -62,7 +62,7 @@ To scan one package inside a monorepo, append `#<sub/dir>` to the URL -- e.g. `h
 
 To onboard a whole GitHub org at once, open **Add multiple** → **Import a whole org** and enter the org (or user) login. Scrutineer fetches every repository and queues each one with the default scan set, skipping forks, archived repos (unless you opt in), and any URL already in the database. Set `GITHUB_TOKEN` to raise GitHub's unauthenticated rate limit when importing large orgs.
 
-You can also scan a directory on disk, useful before pushing, or for code not hosted on a git forge. Paste an absolute path (`/path/to/project`) in the same **Add repository** field. Scrutineer copies the directory into a per-scan workspace and runs the default skill set; skills that need a forge URL or ecosyste.ms enrichment (`advisories`, `exposure`, `fork`, `maintainers`, `metadata`, `packages`, `public-issue`, `report-upstream`) are skipped automatically. Symlinks are recreated as-is rather than dereferenced during the copy; in container mode their targets then resolve inside the container, so host files reached only through such a link are not visible to skills. Under `--no-container` the kernel dereferences them normally, so only point scrutineer at trees you trust.
+You can also scan a directory on disk, useful before pushing, or for code not hosted on a git forge. Paste an absolute path (`/path/to/project`) in the same **Add repository** field. Scrutineer copies the directory into a per-scan workspace and runs the default skill set; skills that need a forge URL or ecosyste.ms enrichment (`advisories`, `exposure`, `fork`, `maintainers`, `metadata`, `packages`, `public-issue`, `report-upstream`) are skipped automatically. Symlinks are recreated as-is rather than dereferenced during the copy; in container mode their targets then resolve inside the container, so host files reached only through such a link are not visible to skills. Under `--no-container`, and for the skills listed in `host_skills`, the kernel dereferences them normally, so only point scrutineer at trees you trust.
 
 The optional analysis tools (semgrep, bandit, zizmor, git-pkgs, brief) are bundled in the runner image, so you don't need them installed locally when the container runner is in use.
 
@@ -428,11 +428,11 @@ The container, egress proxy, language profiles and skill staging stay the same; 
 
 ## Sandboxed Claude Code configs
 
-In `--no-container` mode the `claude` subprocess inherits your `~/.claude/settings.json`, so [sandbox settings](https://code.claude.com/docs/en/sandboxing) that restrict network or filesystem access there will fail skills that need them. Point `claude` at a separate config directory just for scrutineer runs:
+In `--no-container` mode, and for the skills listed in `host_skills`, the `claude` subprocess inherits your `~/.claude/settings.json`, so [sandbox settings](https://code.claude.com/docs/en/sandboxing) that restrict network or filesystem access there will fail skills that need them. Point `claude` at a separate config directory just for scrutineer runs:
 
     CLAUDE_CONFIG_DIR=~/.claude-scrutineer go run ./cmd/scrutineer -skills ./skills
 
-Copy your `settings.json` into that directory and drop the sandbox keys; your normal Claude Code config is untouched. Container mode is not affected: `claude` runs inside the container with its own environment regardless of the host config.
+Copy your `settings.json` into that directory and drop the sandbox keys; your normal Claude Code config is untouched. Container mode is not affected for the skills that stay in the container: there `claude` runs inside the container with its own environment regardless of the host config.
 
 ## Security
 

@@ -55,6 +55,7 @@ func fullConfig() *config.Config {
 
 		FederationSalt:    "s3cret",
 		FederationContact: "security@corp.com",
+		HostSkills:        []string{"verify"},
 	}
 }
 
@@ -76,6 +77,9 @@ func TestFlagsMerge_configFillsUnset(t *testing.T) {
 	}
 	if !f.hardened {
 		t.Errorf("hardened not applied")
+	}
+	if !slices.Equal(f.hostSkills, []string{"verify"}) {
+		t.Errorf("hostSkills = %v, want [verify]", f.hostSkills)
 	}
 	if f.concurrency != 8 {
 		t.Errorf("concurrency = %d", f.concurrency)
@@ -343,6 +347,90 @@ func TestFlagsMerge_backendCLIOverridesConfig(t *testing.T) {
 	f.merge(cfg)
 	if f.backend != "claude" {
 		t.Errorf("CLI -backend was overridden by config: got %q", f.backend)
+	}
+}
+
+func TestSetupRunner_hostSkillsGuards(t *testing.T) {
+	// A skill on the host has no sandbox to harden, so --hardened refuses
+	// host_skills the way it refuses --no-container.
+	f := &flags{hardened: true, hostSkills: []string{"verify"}, addr: "127.0.0.1:8080"}
+	_, _, err := setupRunner(f, nil, quietLog())
+	if err == nil || !strings.Contains(err.Error(), "host_skills") {
+		t.Errorf("--hardened + host_skills: err = %v, want a host_skills error", err)
+	}
+
+	// The host side is claude-only: a non-claude backend has no host binary.
+	f = &flags{backend: "codex", hostSkills: []string{"verify"}, addr: "127.0.0.1:8080"}
+	_, _, err = setupRunner(f, nil, quietLog())
+	if err == nil || !strings.Contains(err.Error(), "host_skills") {
+		t.Errorf("codex + host_skills: err = %v, want a host_skills error", err)
+	}
+
+	// --no-container already runs everything on the host; host_skills is
+	// redundant there and the plain local runner is returned.
+	f = &flags{noContainer: true, hostSkills: []string{"verify"}, addr: "127.0.0.1:8080"}
+	r, base, err := setupRunner(f, nil, quietLog())
+	if err != nil {
+		t.Fatalf("--no-container + host_skills: %v", err)
+	}
+	if _, ok := r.(worker.LocalClaude); !ok {
+		t.Errorf("--no-container + host_skills returned %T, want LocalClaude", r)
+	}
+	if base != "http://127.0.0.1:8080/api" {
+		t.Errorf("apiBase = %q, want the loopback base", base)
+	}
+}
+
+func TestHostAPIBase(t *testing.T) {
+	// An unspecified listen host is not dialable from a host skill, so it maps
+	// to loopback; a concrete host is kept as given.
+	cases := map[string]string{
+		":8080":          "http://127.0.0.1:8080/api",
+		"0.0.0.0:8080":   "http://127.0.0.1:8080/api",
+		"[::]:8080":      "http://127.0.0.1:8080/api",
+		"127.0.0.1:8080": "http://127.0.0.1:8080/api",
+		"localhost:8080": "http://localhost:8080/api",
+		"10.0.0.5:8080":  "http://10.0.0.5:8080/api",
+	}
+	for addr, want := range cases {
+		if got := hostAPIBase(addr); got != want {
+			t.Errorf("hostAPIBase(%q) = %q, want %q", addr, got, want)
+		}
+	}
+}
+
+func TestWarnUnknownHostSkills(t *testing.T) {
+	// A host_skills entry warns when it names no active skill or a skill the
+	// local runner refuses (requires_profile); a plain active skill stays quiet.
+	gdb, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []db.Skill{
+		{Name: "verify", Description: "d", Body: "b", Version: 1, Active: true, Source: "ui"},
+		{Name: "php-audit", Description: "d", Body: "b", Version: 1, Active: true, Source: "ui", RequiresProfile: "php"},
+		{Name: "retired", Description: "d", Body: "b", Version: 1, Active: true, Source: "ui"},
+	} {
+		if err := gdb.Create(&s).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := gdb.Model(&db.Skill{}).Where("name = ?", "retired").Update("active", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	warnUnknownHostSkills(slog.New(slog.NewTextHandler(&out, nil)), gdb, []string{"verify", "php-audit", "retired", "typo"})
+	for _, want := range []string{
+		"names no active skill\" skill=retired",
+		"names no active skill\" skill=typo",
+		"requires a runner profile; the local runner refuses it\" skill=php-audit profile=php",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("log lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "skill=verify") {
+		t.Errorf("active skill warned:\n%s", out.String())
 	}
 }
 

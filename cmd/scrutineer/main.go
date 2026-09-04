@@ -108,6 +108,7 @@ type flags struct {
 	defaultModel          string
 	backend               string
 	noContainer           bool
+	hostSkills            []string
 	runtime               string
 	selinux               string
 	hardened              bool
@@ -312,6 +313,7 @@ func (f *flags) merge(cfg *config.Config) {
 	if cfg.NoContainer != nil && !f.set["no-container"] && !f.set["no-docker"] {
 		f.noContainer = *cfg.NoContainer
 	}
+	f.hostSkills = cfg.HostSkills
 	if cfg.Backend != "" && !f.set["backend"] {
 		f.backend = cfg.Backend
 	}
@@ -654,6 +656,7 @@ func run(log *slog.Logger) error {
 		return err
 	}
 	retireRemovedSkills(log, gdb)
+	warnUnknownHostSkills(log, gdb, f.hostSkills)
 
 	go func() {
 		if n, err := worker.SyncCNAs(context.Background(), gdb, ""); err != nil {
@@ -927,7 +930,8 @@ const defaultRuntimeSmokeTimeout = 5 * time.Minute
 
 // setupRunner picks the SkillRunner implementation for the run loop:
 // ContainerRunner (docker, podman, or Apple's container) when a container runtime is in use,
-// LocalClaude otherwise. It also starts the egress proxy, sweeps stale hardened
+// LocalClaude otherwise, and a HostSplitRunner over both when host_skills sends
+// some skills to the host. It also starts the egress proxy, sweeps stale hardened
 // networks, runs the rootless keep-id smoke test, and returns the apiBase the
 // worker advertises to skills (the container path rewrites it to the selected
 // runtime's host endpoint so containers can reach the loopback-bound web
@@ -935,15 +939,12 @@ const defaultRuntimeSmokeTimeout = 5 * time.Minute
 //
 //nolint:ireturn // dispatched on f.noContainer; concrete types live in the worker pkg
 func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRunner, string, error) {
-	apiBase := "http://" + f.addr + "/api"
+	hostBase := hostAPIBase(f.addr)
 	// Already validated in run(); ignore the error here.
 	h, _ := worker.HarnessByName(f.backend)
 	_, isClaude := h.(worker.ClaudeHarness)
-	if f.hardened && f.noContainer {
-		return nil, "", fmt.Errorf("--hardened requires a container runtime; remove --no-container")
-	}
-	if !isClaude && f.noContainer {
-		return nil, "", fmt.Errorf("backend %q requires the containerised runner; remove --no-container", f.backend)
+	if err := checkHostRunFlags(f, isClaude); err != nil {
+		return nil, "", err
 	}
 	if f.hardenedRuntimeOnly && f.noContainer {
 		log.Warn("--hardened-runtime-only has no effect with --no-container (no container to harden)")
@@ -951,9 +952,13 @@ func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRu
 	if capped := worker.CappedEffort(h, f.effort); capped != f.effort {
 		log.Warn("backend caps the effort level", "backend", f.backend, "requested", f.effort, "using", capped)
 	}
+	local := worker.LocalClaude{Effort: f.effort, FullClone: f.fullClone(), MaxTurns: f.maxTurns}
 	if f.noContainer {
+		if len(f.hostSkills) > 0 {
+			log.Warn("host_skills has no effect with --no-container (every skill already runs on the host)")
+		}
 		log.Info("--no-container set, using local runner (no isolation)")
-		return worker.LocalClaude{Effort: f.effort, FullClone: f.fullClone(), MaxTurns: f.maxTurns}, apiBase, nil
+		return local, hostBase, nil
 	}
 	rt, ok := container.DetectRuntime(f.runtime)
 	if !ok {
@@ -1063,8 +1068,8 @@ func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRu
 		"hardened_runtime_only", f.hardenedRuntimeOnly, "selinux_relabel", relabel)
 	// Skills inside the container reach the host via the runtime's host endpoint,
 	// which the egress proxy rewrites to 127.0.0.1 when dialing the app.
-	apiBase = "http://" + net.JoinHostPort(apiHost, addrPort(f.addr)) + "/api"
-	return worker.ContainerRunner{
+	apiBase := "http://" + net.JoinHostPort(apiHost, addrPort(f.addr)) + "/api"
+	runner := worker.ContainerRunner{
 		Image:               f.runnerImage,
 		Effort:              f.effort,
 		Harness:             h,
@@ -1088,7 +1093,84 @@ func setupRunner(f *flags, cfg *config.Config, log *slog.Logger) (worker.SkillRu
 		},
 		OpencodeProviders: opencodeProviders,
 		OpencodeReadiness: worker.NewOpencodeReadinessCache(),
-	}, apiBase, nil
+	}
+	return splitHostSkills(f, runner, local, hostBase, log), apiBase, nil
+}
+
+// splitHostSkills wraps the container runner so the host_skills entries run
+// through the local runner instead; a nil list leaves it untouched.
+//
+//nolint:ireturn // wraps or passes through the SkillRunner it is given
+func splitHostSkills(f *flags, runner worker.SkillRunner, local worker.LocalClaude, hostBase string, log *slog.Logger) worker.SkillRunner {
+	if len(f.hostSkills) == 0 {
+		return runner
+	}
+	if f.hardenedRuntimeOnly {
+		log.Warn("--hardened-runtime-only does not cover host_skills (no container to harden)", "skills", f.hostSkills)
+	}
+	log.Info("host_skills set, running those skills with the local runner (no isolation)", "skills", f.hostSkills)
+	return worker.HostSplitRunner{Container: runner, Host: local, HostSkills: f.hostSkills, HostAPIBase: hostBase}
+}
+
+// checkHostRunFlags refuses running claude on the host, via --no-container or
+// host_skills, under --hardened (nothing to harden) and under a non-claude
+// backend (its binary only exists in the runner image).
+func checkHostRunFlags(f *flags, isClaude bool) error {
+	var opt string
+	switch {
+	case f.noContainer:
+		opt = "--no-container"
+	case len(f.hostSkills) > 0:
+		opt = "host_skills"
+	default:
+		return nil
+	}
+	if f.hardened {
+		return fmt.Errorf("--hardened requires a container runtime; remove %s", opt)
+	}
+	if !isClaude {
+		return fmt.Errorf("backend %q requires the containerised runner; remove %s", f.backend, opt)
+	}
+	return nil
+}
+
+// hostAPIBase is the skill API address as reached from the host itself. An
+// unspecified listen host (":8080", "0.0.0.0:8080") is not dialable, so it
+// becomes the loopback address.
+func hostAPIBase(addr string) string {
+	if host, port, err := net.SplitHostPort(addr); err == nil {
+		if ip := net.ParseIP(host); host == "" || ip != nil && ip.IsUnspecified() {
+			addr = net.JoinHostPort("127.0.0.1", port)
+		}
+	}
+	return "http://" + addr + "/api"
+}
+
+// warnUnknownHostSkills flags host_skills entries that match no active skill
+// (a typo there silently leaves the skill in its container) and entries whose
+// skill pins a runner profile, which the local runner refuses on every run.
+func warnUnknownHostSkills(log *slog.Logger, gdb *gorm.DB, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	var found []db.Skill
+	if err := gdb.Select("name, requires_profile").Where("name IN ? AND active = ?", names, true).Find(&found).Error; err != nil {
+		log.Warn("host_skills check failed", "err", err)
+		return
+	}
+	byName := make(map[string]db.Skill, len(found))
+	for _, s := range found {
+		byName[s.Name] = s
+	}
+	for _, name := range names {
+		s, ok := byName[name]
+		switch {
+		case !ok:
+			log.Warn("host_skills names no active skill", "skill", name)
+		case s.RequiresProfile != "":
+			log.Warn("host_skills names a skill that requires a runner profile; the local runner refuses it", "skill", name, "profile", s.RequiresProfile)
+		}
+	}
 }
 
 func loadOpencodeProviders(h worker.Harness, providers map[string]config.OpencodeProvider, configPath string) (map[string]worker.OpencodeProviderConfig, error) {

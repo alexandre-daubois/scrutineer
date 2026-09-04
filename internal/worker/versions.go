@@ -11,7 +11,7 @@ import (
 // or "" when the runner is not container-backed (e.g. LocalClaude under
 // --no-container), where there is no fixed image to interrogate.
 func RunnerImageName(r SkillRunner) string {
-	if d, ok := r.(ContainerRunner); ok {
+	if d, ok := containerRunnerOf(r); ok {
 		return d.image()
 	}
 	return ""
@@ -22,10 +22,21 @@ func RunnerImageName(r SkillRunner) string {
 // --no-container). The web settings page passes it to the version probes so a
 // podman host queries podman rather than a non-existent docker daemon.
 func RuntimeOf(r SkillRunner) ContainerRuntime {
-	if d, ok := r.(ContainerRunner); ok {
+	if d, ok := containerRunnerOf(r); ok {
 		return d.Runtime
 	}
 	return ContainerRuntime{}
+}
+
+// containerRunnerOf looks through a HostSplitRunner to its container side, so
+// the settings page keeps reporting the image and runtime when host_skills is
+// set.
+func containerRunnerOf(r SkillRunner) (ContainerRunner, bool) {
+	if s, ok := r.(HostSplitRunner); ok {
+		r = s.Container
+	}
+	d, ok := r.(ContainerRunner)
+	return d, ok
 }
 
 // RuntimeServerVersion returns a human-readable engine version for the settings
