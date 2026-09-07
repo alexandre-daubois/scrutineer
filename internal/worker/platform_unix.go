@@ -11,18 +11,21 @@ import (
 
 // setNewProcessGroup starts cmd in its own process group, so a terminal
 // interrupt reaches scrutineer's shutdown path rather than the child, and so
-// terminateProcessGroup can signal every descendant at once.
+// the terminator can signal every descendant at once.
 func setNewProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-// terminateProcessGroup sends SIGTERM to cmd's process group once Wait has
-// returned, reaping children the runtime or harness CLI left running.
-func terminateProcessGroup(cmd *exec.Cmd) {
-	if cmd.Process == nil {
-		return
+// superviseProcessGroup returns the func that sends SIGTERM to cmd's process
+// group, reaping children the runtime or harness CLI left running. Call it
+// once Wait has returned.
+func superviseProcessGroup(cmd *exec.Cmd) func() {
+	return func() {
+		if cmd.Process == nil {
+			return
+		}
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 }
 
 // containerUserArgs maps the container user onto the invoking host user so

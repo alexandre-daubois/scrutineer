@@ -41,6 +41,6 @@ func TestContainerUserArgs(t *testing.T) {
 }
 
 // A command that never started has no process to signal.
-func TestTerminateProcessGroupBeforeStart(t *testing.T) {
-	terminateProcessGroup(exec.Command("scrutineer-never-started"))
+func TestSuperviseProcessGroupBeforeStart(t *testing.T) {
+	superviseProcessGroup(exec.Command("scrutineer-never-started"))()
 }

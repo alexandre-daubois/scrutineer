@@ -289,6 +289,7 @@ func (l LocalClaude) runClaudeOnce(ctx context.Context, args []string, work stri
 	if err := cmd.Start(); err != nil {
 		return false, "", fmt.Errorf("start claude: %w", err)
 	}
+	defer superviseProcessGroup(cmd)()
 
 	wrappedEmit := func(e Event) {
 		switch {
@@ -301,7 +302,6 @@ func (l LocalClaude) runClaudeOnce(ctx context.Context, args []string, work stri
 	}
 	ClaudeHarness{}.ParseStream(stdout, wrappedEmit)
 	waitErr = cmd.Wait()
-	terminateProcessGroup(cmd)
 	return hitMaxTurns, sessionID, waitErr
 }
 
