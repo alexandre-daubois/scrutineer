@@ -272,6 +272,13 @@ Use `--runtime podman` to run scans under podman instead of docker (see [Podman 
     docker build -t scrutineer-runner -f Dockerfile.runner .
     go run ./cmd/scrutineer -skills ./skills --runner-image scrutineer-runner
 
+The runner's bundled Claude Code only moves when a maintainer merges Renovate's update, and Renovate waits until a Claude Code release is seven days old, so a model that needs a newer CLI takes at least a week to become usable. It takes longer on a release binary, whose default runner image only changes with the next scrutineer release. To run a newer Claude Code without falling back to `--no-container`, build the runner from a checkout of the scrutineer version you run and override the `CLAUDE_*_LOCK` build arguments with the Claude Code tag and the SHA-256 of `claude-linux-x64.tar.gz` and `claude-linux-arm64.tar.gz` from that Claude Code release's `SHASUMS256.txt`. Per-ecosystem profile images are cached by a locally built runner's tag alone, so give each version its own tag to have them rebuilt on top of it:
+
+    docker build -t scrutineer-runner:claude-2.1.284 -f Dockerfile.runner --build-arg CLAUDE_AMD64_LOCK=v2.1.284@sha256:<x64 digest> --build-arg CLAUDE_ARM64_LOCK=v2.1.284@sha256:<arm64 digest> .
+    go run ./cmd/scrutineer -skills ./skills --runner-image scrutineer-runner:claude-2.1.284
+
+The staleness check below never flags a locally built runner, so drop `--runner-image` once the published runner carries the Claude Code release you need.
+
 The runner image is not auto-updated, so the analysis toolchain stays on whatever digest you pulled until you pull again. To keep that drift visible, scrutineer checks the registry once at startup (in the background, and failing silently if the registry is unreachable) and flags the runner image when it is more than seven days behind the published `:latest` -- both in the boot log and as a banner on the Settings page. Update with:
 
     docker pull ghcr.io/alpha-omega-security/scrutineer-runner:latest
