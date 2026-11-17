@@ -531,6 +531,11 @@ func (w *Worker) parseSkillOutputKind(ctx context.Context, skill *db.Skill, scan
 			return fmt.Errorf("reflection output is reserved for the reflect skill")
 		}
 		return w.parseReflectionOutput(scan, report)
+	case "synthesis":
+		if skill.Name != synthesizeSkillName {
+			return fmt.Errorf("synthesis output is reserved for the synthesize skill")
+		}
+		return w.parseSynthesisOutput(scan, report)
 	case "findings":
 		return w.parseFindingsOutput(skill, scan, report, emit)
 	case "maintainers":
@@ -1456,7 +1461,7 @@ func oneLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// stageImportPayload writes ingest input or a reflection snapshot at
+// stageImportPayload writes ingest input or a reflection or synthesis snapshot at
 // import/report. Scans without a payload stage nothing.
 func stageImportPayload(workRoot string, payload []byte) error {
 	if len(payload) == 0 {

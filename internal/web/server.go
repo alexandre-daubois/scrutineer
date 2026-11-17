@@ -611,6 +611,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /findings/{id}/exploited-in-wild", s.findingExploitedInWild)
 	mux.HandleFunc("POST /findings/{id}/verify", s.findingVerify)
 	mux.HandleFunc("POST /findings/{id}/critic", s.findingCritic)
+	mux.HandleFunc("POST /findings/{id}/synthesize", s.findingSynthesize)
 	mux.HandleFunc("POST /repositories/{id}/verify-all", s.repoVerifyAll)
 	mux.HandleFunc("POST /findings/{id}/disclose", s.findingDisclose)
 	mux.HandleFunc("POST /findings/{id}/public-issue", s.findingPublicIssue)
@@ -2133,6 +2134,7 @@ func (s *Server) findingShow(w http.ResponseWriter, r *http.Request) {
 		s.Log.Warn("load finding attack paths", "finding", f.ID, "err", err)
 	}
 	observations := s.findingObservations(f.ID)
+	synthesis := s.findingSynthesis(f.ID)
 	remediationAttempts, err := loadRemediationAttemptViews(s.DB, f.ID)
 	if err != nil {
 		s.Log.Warn("load remediation attempts", "finding", f.ID, "err", err)
@@ -2204,6 +2206,7 @@ func (s *Server) findingShow(w http.ResponseWriter, r *http.Request) {
 		"Verifications":       verifications,
 		"AttackPaths":         attackPaths,
 		"Observations":        observations,
+		"Synthesis":           synthesis,
 		"RemediationAttempts": remediationAttempts,
 		"ReattackInFlight":    reattackInFlight,
 		"LatestRevalidate":    latestRevalidate,
@@ -3506,7 +3509,7 @@ func findingChildModels() []any {
 	return []any{
 		&db.FindingNote{}, &db.FindingCommunication{}, &db.FindingReference{},
 		&db.FindingHistory{}, &db.FindingDependent{}, &db.FindingReview{}, &db.FeedbackConfirmation{}, &db.DisclosureSubmission{},
-		&db.FindingVerification{}, &db.FindingAttackPath{}, &db.FindingObservation{}, &db.FindingPoC{}, &db.ImportArtifact{},
+		&db.FindingVerification{}, &db.FindingAttackPath{}, &db.FindingObservation{}, &db.FindingSynthesis{}, &db.FindingPoC{}, &db.ImportArtifact{},
 		&db.RemediationValidation{}, &db.RemediationAttempt{},
 	}
 }
@@ -3673,7 +3676,7 @@ type ScanOpts struct {
 	// rerun chain stays walkable hop by hop. Nil on a first-time enqueue.
 	ParentScanID         *uint
 	VerificationFeedback string
-	// ImportPayload is an ingest report or a retained reflection snapshot;
+	// ImportPayload is an ingest report or a retained reflection or synthesis snapshot;
 	// the worker stages it at import/report. Empty for other enqueues.
 	ImportPayload []byte
 }

@@ -668,6 +668,24 @@ func TestParseFile_reflectionOutputKind(t *testing.T) {
 	}
 }
 
+func TestParseFile_synthesisOutputKindReservedForSynthesize(t *testing.T) {
+	for _, name := range []string{"synthesize", "custom-synthesize"} {
+		t.Run(name, func(t *testing.T) {
+			path := writeSkill(t, t.TempDir(), name, "---\nname: "+name+"\ndescription: Combine observations\nmetadata:\n  scrutineer.output_kind: synthesis\n---\nbody")
+			parsed, err := ParseFile(path)
+			if name != "synthesize" {
+				if err == nil || !strings.Contains(err.Error(), "synthesis output is reserved for the synthesize skill") {
+					t.Fatalf("expected reserved output_kind error, got %v", err)
+				}
+				return
+			}
+			if err != nil || parsed.OutputKind != "synthesis" {
+				t.Fatalf("output_kind = %q, err = %v", parsed.OutputKind, err)
+			}
+		})
+	}
+}
+
 func TestParseFile_rejectsUnsupportedVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := writeSkill(t, dir, "future", `---

@@ -57,6 +57,12 @@ func (w *Worker) preflightSkill(ctx context.Context, scan *db.Scan, attempt int)
 			return w.deferSkillPrereqs(ctx, scan, &skill, attempt, []string{"triage cohort"})
 		}
 	}
+	if skill.Name == synthesizeSkillName {
+		if err := w.prepareSynthesis(scan); err != nil {
+			w.failScanPrereqs(scan, skill.Name, err.Error(), nil)
+			return true, nil
+		}
+	}
 	requires := skills.SplitPatterns(skill.Requires)
 	if len(requires) == 0 {
 		return false, nil

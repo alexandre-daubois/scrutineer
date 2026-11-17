@@ -464,8 +464,9 @@ type Scan struct {
 	PausedUntil *time.Time `gorm:"index"`
 
 	// ImportPayload carries an uploaded ingest report or a host-generated
-	// reflection transcript snapshot. The worker stages these immutable input
-	// bytes at import/report before the skill starts. Empty for other scans.
+	// reflection transcript or synthesis observation snapshot. The worker
+	// stages these immutable input bytes at import/report before the skill
+	// starts. Empty for other scans.
 	ImportPayload []byte
 
 	FindingsCount int
@@ -1732,7 +1733,7 @@ func Models() []any {
 	return []any{
 		&Repository{}, &Scan{},
 		&Finding{}, &FindingLabel{}, &FindingNote{}, &DisclosureSubmission{},
-		&FindingCommunication{}, &FindingReference{}, &FindingHistory{}, &FindingReview{}, &FeedbackConfirmation{}, &FindingVerification{}, &FindingAttackPath{}, &FindingObservation{}, &ScanPreflightReceipt{}, &ScanGroupBudget{},
+		&FindingCommunication{}, &FindingReference{}, &FindingHistory{}, &FindingReview{}, &FeedbackConfirmation{}, &FindingVerification{}, &FindingAttackPath{}, &FindingObservation{}, &FindingSynthesis{}, &ScanPreflightReceipt{}, &ScanGroupBudget{},
 		&RemediationAttempt{}, &RemediationValidation{}, &AuditEvent{}, &FindingPoC{}, &ImportArtifact{},
 		&Dependency{}, &ExpectedFinding{}, &Package{}, &PackageAlternative{}, &Dependent{}, &FindingDependent{}, &Advisory{}, &AdvisoryAudit{},
 		&Maintainer{}, &MaintainerActivity{}, &Skill{}, &Subproject{}, &ComplianceControl{},

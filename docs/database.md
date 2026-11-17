@@ -522,6 +522,21 @@ Append-only record of each scan reporting a finding, findings imports included (
 | created_at | datetime | |
 | updated_at | datetime | |
 
+## finding_syntheses
+
+One row per `synthesize` scan, combining the observations of a finding (its own plus those of findings merged into it). Before the model runs, the worker freezes those observations into the scan's `import_payload` under neutral labels (`R1`, `R2`, ...) that name no skill, backend, model or scan, and a retry carries that snapshot over and replays it, so observations recorded in between are not added. The parser rejects the whole report when it cites a label the snapshot does not hold, leaves a label uncited and not listed as unused, gives a `severity` or `reachability` position that differs from the cited observation's own value, omits a `severity` or `reachability` disagreement the observations show, or names an observation that no longer belongs to the finding and repository, and nothing is written in that case. The finding page shows the newest row with each label resolved to the scan and model behind it. A synthesis is not verification: writing one never changes the finding's status, severity or disclosure fields, nor any observation. The report text is untrusted model output, stored and shown as data.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | integer PK | |
+| finding_id | integer FK, indexed | References `findings.id`; deleted with the finding. |
+| scan_id | integer, unique | The `synthesize` scan. Unique, so re-parsing the same scan's report replaces its row. |
+| repository_id | integer, indexed | Denormalized from the scan. |
+| report | text | Validated JSON report: `summary`, `claims` (each with the labels it cites), `disagreements` on `severity`, `reachability` or `security_impact` (one position per label) and `unused` labels with a reason. |
+| sources | text | JSON object mapping each label to its `finding_observations.id`. |
+| created_at | datetime | |
+| updated_at | datetime | |
+
 ## remediation_attempts
 
 Append-only patch attempts produced when a finding-scoped `patch` report passes the host-side applicability gate. `findings.suggested_fix` and `suggested_fix_commit` are only convenient projections of the newest row; this table is the remediation history and is never overwritten by a later proposal.

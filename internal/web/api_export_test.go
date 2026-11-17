@@ -511,6 +511,7 @@ func testAPIv1DeleteFinding(t *testing.T, foreignKeys bool) {
 		"poc":           countRows(t, s, &db.FindingPoC{}, "finding_id = ?", finding.ID),
 		"attackpaths":   countRows(t, s, &db.FindingAttackPath{}, "finding_id = ?", finding.ID),
 		"observations":  countRows(t, s, &db.FindingObservation{}, "finding_id = ?", finding.ID),
+		"syntheses":     countRows(t, s, &db.FindingSynthesis{}, "finding_id = ?", finding.ID),
 		"attempts":      countRows(t, s, &db.RemediationAttempt{}, "finding_id = ?", finding.ID),
 		"validations":   countRows(t, s, &db.RemediationValidation{}, "finding_id = ?", finding.ID),
 		"conversation":  countRows(t, s, &db.Conversation{}, "finding_id = ?", finding.ID),

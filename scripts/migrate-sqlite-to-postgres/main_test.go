@@ -261,6 +261,7 @@ func seedHistory(t *testing.T, src *gorm.DB) {
 		&db.FindingVerification{FindingID: 1, ScanID: 1, Status: "verified", Report: "{}"},
 		&db.FindingAttackPath{FindingID: 1, ScanID: 1, ProductionViability: "VIABLE", Report: "{}"},
 		&db.FindingObservation{FindingID: 1, ScanID: 1, RepositoryID: 1, Commit: "abc123", Severity: "High", Evidence: `{"trace":"t"}`},
+		&db.FindingSynthesis{FindingID: 1, ScanID: 1, RepositoryID: 1, Report: `{"summary":"s"}`, Sources: `{"R1":1}`},
 		&db.RemediationAttempt{FindingID: 1, PatchScanID: 1, Attempt: 1, Patch: "diff", BaseCommit: "abc123"},
 		&db.RemediationValidation{FindingID: 1, RemediationAttemptID: 1, ScanID: 1, RootCauseStatus: "failed_to_bypass", Report: "{}"},
 		&db.AuditEvent{Kind: "finding.status", SubjectType: "finding", SubjectID: 1, Payload: "{}"},

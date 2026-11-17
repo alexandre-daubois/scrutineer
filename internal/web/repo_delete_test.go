@@ -183,6 +183,7 @@ func testRepoDeleteLinkedData(t *testing.T, foreignKeys bool) {
 		"verifications":  count(&db.FindingVerification{}, "finding_id = ?", finding.ID),
 		"attackpaths":    count(&db.FindingAttackPath{}, "finding_id = ?", finding.ID),
 		"observations":   count(&db.FindingObservation{}, "finding_id = ?", finding.ID),
+		"syntheses":      count(&db.FindingSynthesis{}, "finding_id = ?", finding.ID),
 		"attempts":       count(&db.RemediationAttempt{}, "finding_id = ?", finding.ID),
 		"validations":    count(&db.RemediationValidation{}, "finding_id = ?", finding.ID),
 	} {
@@ -493,6 +494,7 @@ func seedFindingAssessments(t *testing.T, s *Server, finding db.Finding, scan db
 		&db.FindingVerification{FindingID: finding.ID, ScanID: scan.ID, Status: "verified", Report: "{}"},
 		&db.FindingAttackPath{FindingID: finding.ID, ScanID: scan.ID, ProductionViability: db.ProductionViabilityViable, Report: "{}"},
 		&db.FindingObservation{FindingID: finding.ID, ScanID: scan.ID, RepositoryID: finding.RepositoryID, Severity: "High"},
+		&db.FindingSynthesis{FindingID: finding.ID, ScanID: scan.ID, RepositoryID: finding.RepositoryID, Report: "{}", Sources: "{}"},
 		&db.RemediationValidation{FindingID: finding.ID, ScanID: scan.ID, RemediationAttemptID: attempt.ID, RootCauseStatus: db.ReattackFailedToBypass, Report: "{}"},
 	} {
 		if err := s.DB.Create(row).Error; err != nil {

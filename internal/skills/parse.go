@@ -96,6 +96,7 @@ var severityLevels = map[string]bool{"Low": true, "Medium": true, "High": true, 
 // internal/worker/skill.go.
 var OutputKinds = map[string]bool{
 	"reflection":      true,
+	"synthesis":       true,
 	"":                true,
 	"freeform":        true,
 	"findings":        true,
@@ -357,6 +358,9 @@ func (p *Parsed) validateOutputMetadata() error {
 		}
 		if strings.TrimSpace(s) == "reflection" && p.Name != "reflect" {
 			return fmt.Errorf("%s: reflection output is reserved for the reflect skill", metaOutputKind)
+		}
+		if strings.TrimSpace(s) == "synthesis" && p.Name != "synthesize" {
+			return fmt.Errorf("%s: synthesis output is reserved for the synthesize skill", metaOutputKind)
 		}
 	}
 	if v, ok := p.Metadata[metaPoCField]; ok {

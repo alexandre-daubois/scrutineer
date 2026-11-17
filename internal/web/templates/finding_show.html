@@ -362,6 +362,11 @@
       {{if .Disagreements}}
       <div class="text-sm border rounded-md p-3" role="note">Observations disagree on {{range $i, $d := .Disagreements}}{{if $i}}, {{end}}{{$d}}{{end}}.</div>
       {{end}}
+      {{if ge .Total 2}}
+      <form method="post" action="/findings/{{$f.ID}}/synthesize" hx-post="/findings/{{$f.ID}}/synthesize">
+        <button type="submit" class="btn-sm-outline"><i data-lucide="combine"></i> Synthesize observations</button>
+      </form>
+      {{end}}
       <div class="overflow-x-auto">
         <table class="table w-full text-sm">
           <thead><tr><th>Scan</th><th>Skill</th><th>Model</th><th>Severity</th><th>Reported as</th></tr></thead>
@@ -390,6 +395,67 @@
           </tbody>
         </table>
       </div>
+    </section>
+  </details>
+  {{end}}
+
+  {{with .Synthesis}}
+  <details open class="group border-b">
+    <summary class="w-full outline-none rounded-md focus-visible:ring-ring/50 focus-visible:ring-[3px]">
+      <h3 class="flex flex-1 items-center justify-between gap-4 py-4 text-base font-semibold hover:underline">
+        Synthesis
+        <i data-lucide="chevron-down" class="text-muted-foreground size-4 shrink-0 transition-transform duration-200 group-open:rotate-180"></i>
+      </h3>
+    </summary>
+    <section class="pb-4 grid gap-4">
+      <p class="text-xs text-muted-foreground">Scan <a href="/scans/{{.ScanID}}" class="hover:underline">#{{.ScanID}}</a> combined the observations under neutral labels. Reviewers are attached here afterwards. A synthesis is not verification.</p>
+      <p class="whitespace-pre-wrap">{{.Summary}}</p>
+      <div class="overflow-x-auto">
+        <table class="table w-full text-sm">
+          <thead><tr><th>Claim</th><th>Sources</th></tr></thead>
+          <tbody>
+          {{range .Claims}}
+            <tr class="align-top">
+              <td class="whitespace-pre-wrap">{{.Statement}}</td>
+              <td>{{range .Sources}}{{template "synthesis-source" .}}{{end}}</td>
+            </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{if .Disagreements}}
+      <div class="overflow-x-auto">
+        <table class="table w-full text-sm">
+          <thead><tr><th>Disagreement</th><th>Source</th><th>Position</th></tr></thead>
+          <tbody>
+          {{range .Disagreements}}{{$field := .Field}}
+            {{range .Positions}}
+            <tr class="align-top">
+              <td>{{$field}}</td>
+              <td>{{template "synthesis-source" .Source}}</td>
+              <td class="whitespace-pre-wrap">{{.Value}}</td>
+            </tr>
+            {{end}}
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{end}}
+      {{if .Unused}}
+      <div class="overflow-x-auto">
+        <table class="table w-full text-sm">
+          <thead><tr><th>Unused source</th><th>Reason</th></tr></thead>
+          <tbody>
+          {{range .Unused}}
+            <tr class="align-top">
+              <td>{{template "synthesis-source" .Source}}</td>
+              <td class="whitespace-pre-wrap">{{.Reason}}</td>
+            </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{end}}
     </section>
   </details>
   {{end}}
@@ -1248,3 +1314,5 @@ git commit -m "fix: {{$f.Title}}"</pre>
 </div>
 
 {{template "foot" .}}
+
+{{define "synthesis-source"}}<div class="whitespace-nowrap"><span class="badge-outline">{{.Label}}</span>{{with .Observation}} <a href="/scans/{{.ScanID}}" class="hover:underline">#{{.ScanID}}</a> <span class="text-muted-foreground">{{.SkillName}}{{if and .SkillName .Backend}} · {{end}}{{.Backend}}{{if and (or .SkillName .Backend) .Model}} · {{end}}{{.Model}}</span>{{else}} <span class="text-muted-foreground">observation removed</span>{{end}}</div>{{end}}

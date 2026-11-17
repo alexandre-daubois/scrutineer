@@ -219,6 +219,7 @@ func TestRepoWideProjectionKinds_everyOutputKindClassified(t *testing.T) {
 		"exposure":        true, // per-dependent reachability
 		"verify":          true, // finding-scoped
 		"critic":          true, // finding-scoped
+		"synthesis":       true, // finding-scoped
 		"revalidate":      true, // finding-scoped
 		"breaking_change": true, // finding-scoped
 		"mitigation":      true, // finding-scoped
