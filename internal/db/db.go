@@ -417,6 +417,15 @@ type Scan struct {
 	// It is not a verdict and is never copied into the finding's reproduction.
 	VerificationFeedback string `gorm:"type:text"`
 
+	// Experiment names the scan_experiments entry tied to this scan. On an
+	// ordinary scan it is the candidate configuration to trial once the scan
+	// finalizes. On a candidate scan it is the configuration that ran.
+	Experiment string `gorm:"index"`
+	// CandidateOfScanID marks a candidate scan and points at the ordinary scan
+	// it is compared against. A candidate's findings land in
+	// candidate_observations only, and no follow-up hook fires for it.
+	CandidateOfScanID *uint `gorm:"index"`
+
 	// Recipe is an immutable JSON snapshot (worker.ScanRecipe) of the
 	// inputs the worker was handed, written once inside the transaction
 	// that claims the scan and never updated. The columns it duplicates are
@@ -1740,6 +1749,7 @@ func Models() []any {
 		&Repository{}, &Scan{},
 		&Finding{}, &FindingLabel{}, &FindingNote{}, &DisclosureSubmission{},
 		&FindingCommunication{}, &FindingReference{}, &FindingHistory{}, &FindingReview{}, &FeedbackConfirmation{}, &FindingVerification{}, &FindingAttackPath{}, &FindingObservation{}, &ScanPreflightReceipt{}, &ScanGroupBudget{},
+		&CandidateObservation{}, &ExperimentDecision{},
 		&RemediationAttempt{}, &RemediationValidation{}, &AuditEvent{}, &FindingPoC{}, &ImportArtifact{},
 		&Dependency{}, &ExpectedFinding{}, &Package{}, &PackageAlternative{}, &Dependent{}, &FindingDependent{}, &Advisory{}, &AdvisoryAudit{},
 		&Maintainer{}, &MaintainerActivity{}, &Skill{}, &Subproject{}, &ComplianceControl{},

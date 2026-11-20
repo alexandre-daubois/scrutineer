@@ -371,6 +371,9 @@ paths:
         the bearer token, never trusted from the body. The finding still
         belongs in the final `report.json`, which reconciles against the
         streamed row by fingerprint rather than duplicating it.
+        A candidate scan's finding is recorded in its candidate observations
+        instead, never in the repository's findings, and the response carries
+        id 0.
         If PoC capture fails, the finding is still saved and the 201 response
         includes `poc_capture_error`. Correct the files and publish again to
         retry capture.
@@ -2389,6 +2392,14 @@ components:
             cache_write_tokens: { type: integer }
             prompt:             { type: string }
             findings_count:     { type: integer }
+            experiment:
+              type: string
+              description: The scan_experiments entry tied to the scan. On an ordinary scan it is the candidate configuration to trial after it finalizes, on a candidate scan the configuration that ran. Empty otherwise.
+            candidate_of_scan_id:
+              type: integer
+              format: int64
+              nullable: true
+              description: Set on a candidate scan to the ordinary scan it is compared against. A candidate's findings are kept out of the repository's findings.
             created_at:         { type: string, format: date-time }
             updated_at:         { type: string, format: date-time }
 

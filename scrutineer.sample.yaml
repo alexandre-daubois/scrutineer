@@ -243,6 +243,14 @@
 #       - registry.npmjs.org:443
 #       - pypi.org:443
 
+# Candidate configurations the Run skill menu can trial beside one findings
+# scan, on the same commit, without touching the repository's findings. Each
+# entry sets at least one of model, effort and skill. See docs/scanning.md.
+# scan_experiments:
+#   sonnet-trial:
+#     model: claude-sonnet-5
+#     effort: medium
+
 # Enrich repositories from ecosyste.ms: the per-repository cache refreshed
 # before each scan, the eager warm when a repository is added, and the PURL to
 # repository resolution behind SBOM and dependency import. false stops every

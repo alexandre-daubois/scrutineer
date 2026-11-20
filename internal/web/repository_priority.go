@@ -29,7 +29,7 @@ func loadPriorityScanStats(g *gorm.DB) (map[uint]priorityScanStats, error) {
 	var stats []priorityScanStats
 	err := g.Model(&db.Repository{}).
 		Select("repositories.id AS repository_id, (" + deepDiveFindingsCountSQL + ") AS findings_total, latest.id AS last_scan_id, latest.created_at AS last_scan_at").
-		Joins("LEFT JOIN scans latest ON latest.id = (SELECT MAX(id) FROM scans WHERE scans.repository_id = repositories.id)").Scan(&stats).Error
+		Joins("LEFT JOIN scans latest ON latest.id = (SELECT MAX(id) FROM scans WHERE scans.repository_id = repositories.id AND scans.candidate_of_scan_id IS NULL)").Scan(&stats).Error
 	if err != nil {
 		return nil, err
 	}

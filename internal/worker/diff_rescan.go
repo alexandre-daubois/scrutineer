@@ -241,7 +241,7 @@ func (w *Worker) planDiff(ctx context.Context, scan *db.Scan, baseline db.Scan, 
 func (w *Worker) diffBaseline(scan *db.Scan) (db.Scan, bool) {
 	// Not(map) lets GORM's dialector quote the reserved-word column
 	// (`commit` on SQLite, "commit" on Postgres) instead of hardcoding one style.
-	q := w.DB.Where("repository_id = ? AND status = ?", scan.RepositoryID, db.ScanDone).
+	q := db.ProductionScans(w.DB.Where("repository_id = ? AND status = ?", scan.RepositoryID, db.ScanDone)).
 		Not(map[string]any{"commit": ""})
 	if scan.DiffBaseScanID != nil {
 		q = q.Where("id = ?", *scan.DiffBaseScanID)

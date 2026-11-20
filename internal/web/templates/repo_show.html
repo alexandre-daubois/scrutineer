@@ -27,6 +27,13 @@
         {{range .ScanEgressPolicies}}<option value="{{.}}">{{.}}</option>{{end}}
       </select>
       {{end}}
+      {{if .ScanExperiments}}
+      <select class="select text-xs" name="experiment" aria-label="Candidate experiment"
+              data-tooltip="Also run this candidate configuration on the same commit once the scan finishes. Its findings are kept apart for comparison.">
+        <option value="">No experiment</option>
+        {{range .ScanExperiments}}<option value="{{.}}">{{.}}</option>{{end}}
+      </select>
+      {{end}}
       <input type="number" name="max_cost_usd" min="0" step="0.01" inputmode="decimal" class="input text-xs w-36" placeholder="Cost cap (USD)" aria-label="Cost cap in USD">
       <div class="dropdown-menu">
         <button class="btn-outline" type="button" aria-haspopup="menu" aria-expanded="false"

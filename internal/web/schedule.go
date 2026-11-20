@@ -233,7 +233,7 @@ func (s *Server) runScheduledScan(
 		return
 	}
 	var last db.Scan
-	err = s.DB.Select(`id, "commit"`).
+	err = db.ProductionScans(s.DB.Select(`id, "commit"`)).
 		Where(`repository_id = ? AND status = ? AND "commit" <> ''`, repo.ID, db.ScanDone).
 		Order("id desc").First(&last).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {

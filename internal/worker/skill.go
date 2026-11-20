@@ -219,6 +219,11 @@ func (w *Worker) doSkill(ctx context.Context, scan *db.Scan, emit func(Event)) (
 		scan.Commit = cacheCommit
 		w.clearCloneError(scan)
 	}
+	if scan.IsCandidate() {
+		if err := w.checkCandidateInputs(scan); err != nil {
+			return "", err
+		}
+	}
 	if skill.Name == embeddedNativeSkillName {
 		if err := stageEmbeddedNativeComponents(ctx, workRoot, scan.SubPath); err != nil {
 			return "", err
@@ -525,6 +530,9 @@ func (w *Worker) parseSkillOutput(ctx context.Context, skill *db.Skill, scan *db
 }
 
 func (w *Worker) parseSkillOutputKind(ctx context.Context, skill *db.Skill, scan *db.Scan, report string, emit func(Event)) error {
+	if scan.IsCandidate() {
+		return w.parseCandidateOutput(skill, scan, report, emit)
+	}
 	switch skill.OutputKind {
 	case "reflection":
 		if skill.Name != "reflect" {
@@ -579,7 +587,9 @@ func (w *Worker) parseSkillOutputKind(ctx context.Context, skill *db.Skill, scan
 
 func (w *Worker) handleCloneError(scan *db.Scan, err error, emit func(Event)) (string, bool) {
 	var ure *RepoUnreachableError
-	if !errors.As(err, &ure) {
+	// A candidate that cannot fetch its pinned commit never ran, so it fails
+	// rather than finishing with an empty report or flagging the repository.
+	if !errors.As(err, &ure) || scan.IsCandidate() {
 		return "", false
 	}
 	w.DB.Model(&db.Repository{}).Where("id = ?", scan.RepositoryID).
@@ -628,38 +638,9 @@ func (w *Worker) parseFindingsOutput(skill *db.Skill, scan *db.Scan, report stri
 // findings with their database IDs set (dedup resolves to the existing row)
 // so callers like parseAdvisoryAuditOutput can map report-local ids to rows.
 func (w *Worker) ingestFindings(skill *db.Skill, scan *db.Scan, report string, emit func(Event)) ([]db.Finding, error) {
-	rep, err := parseReport([]byte(report))
+	findings, err := w.reportFindings(skill, scan, report, scan.SkillName, emit)
 	if err != nil {
 		return nil, err
-	}
-	findings := rep.toFindings(scan.ID, scan.RepositoryID, scan.Commit, scan.SubPath, scan.Model)
-	// Grouping keeps the first entry's evidence, so stubs go before it.
-	if schemaRequiresEvidence(skill.SchemaJSON) {
-		findings = dropStubFindings(findings, emit)
-	}
-	findings = groupByFingerprint(findings, scan.SkillName)
-
-	if skill.MinConfidence != "" {
-		kept := findings[:0]
-		for _, f := range findings {
-			if db.ConfidenceAtLeast(f.Confidence, skill.MinConfidence) {
-				kept = append(kept, f)
-			}
-		}
-		if dropped := len(findings) - len(kept); dropped > 0 {
-			emit(Event{Kind: KindText, Text: fmt.Sprintf("dropped %d finding(s) below min_confidence=%s", dropped, skill.MinConfidence)})
-		}
-		findings = kept
-	}
-	scan.FindingsCount = len(findings)
-
-	// VIDs hash the code at each sink and snippets excerpt it around the
-	// primary location, so both can only be captured while the scanned
-	// checkout is still on disk at workRoot/src.
-	srcDir := filepath.Join(w.scanWorkRoot(scan), "src")
-	for i := range findings {
-		findings[i].VID = w.computeVID(srcDir, findings[i].Locations)
-		findings[i].Snippet = readSnippet(srcDir, findings[i].Location)
 	}
 
 	worst := ""
@@ -702,6 +683,46 @@ func (w *Worker) ingestFindings(skill *db.Skill, scan *db.Scan, report string, e
 
 	if db.SeverityAtLeast(worst, skill.FailOn) {
 		return findings, &FailOnThresholdError{Worst: worst, Threshold: skill.FailOn}
+	}
+	return findings, nil
+}
+
+// reportFindings parses a findings report into fingerprinted findings, after
+// the stub, grouping and min_confidence filters, without writing anything.
+// fingerprintSkill is the skill name the fingerprints are computed under.
+func (w *Worker) reportFindings(skill *db.Skill, scan *db.Scan, report, fingerprintSkill string, emit func(Event)) ([]db.Finding, error) {
+	rep, err := parseReport([]byte(report))
+	if err != nil {
+		return nil, err
+	}
+	findings := rep.toFindings(scan.ID, scan.RepositoryID, scan.Commit, scan.SubPath, scan.Model)
+	// Grouping keeps the first entry's evidence, so stubs go before it.
+	if schemaRequiresEvidence(skill.SchemaJSON) {
+		findings = dropStubFindings(findings, emit)
+	}
+	findings = groupByFingerprint(findings, fingerprintSkill)
+
+	if skill.MinConfidence != "" {
+		kept := findings[:0]
+		for _, f := range findings {
+			if db.ConfidenceAtLeast(f.Confidence, skill.MinConfidence) {
+				kept = append(kept, f)
+			}
+		}
+		if dropped := len(findings) - len(kept); dropped > 0 {
+			emit(Event{Kind: KindText, Text: fmt.Sprintf("dropped %d finding(s) below min_confidence=%s", dropped, skill.MinConfidence)})
+		}
+		findings = kept
+	}
+	scan.FindingsCount = len(findings)
+
+	// VIDs hash the code at each sink and snippets excerpt it around the
+	// primary location, so both can only be captured while the scanned
+	// checkout is still on disk at workRoot/src.
+	srcDir := filepath.Join(w.scanWorkRoot(scan), "src")
+	for i := range findings {
+		findings[i].VID = w.computeVID(srcDir, findings[i].Locations)
+		findings[i].Snippet = readSnippet(srcDir, findings[i].Location)
 	}
 	return findings, nil
 }
@@ -1601,6 +1622,15 @@ func (w *Worker) stageWorkspace(ctx context.Context, workRoot, skillDir string, 
 	}
 	staged := *scan
 	staged.Repository.ThreatModel = model
+	if scan.IsCandidate() {
+		// A candidate checks out its baseline's commit, so the reports scoped
+		// to the baseline's ref describe its tree as well.
+		baseline, err := w.candidateBaseline(scan)
+		if err != nil {
+			return skillContext{}, err
+		}
+		staged.Ref = baseline.Ref
+	}
 	return stageWorkspaceWithInputs(
 		workRoot, skillDir, w.apiBaseFor(skill.Name), w.ForkOrg, w.metadataDir(), &staged, skill, recon, novelty, controls, feedback,
 	)

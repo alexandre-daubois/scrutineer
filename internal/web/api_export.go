@@ -222,7 +222,7 @@ func (s *Server) repositoryExportQuery() *gorm.DB {
 			(` + deepDiveFindingsCountSQL + `) AS findings_count`).
 		Joins(`LEFT JOIN scans AS last_scans ON last_scans.id = (
 			SELECT id FROM scans
-			WHERE repository_id = repositories.id
+			WHERE repository_id = repositories.id AND candidate_of_scan_id IS NULL
 			ORDER BY id DESC
 			LIMIT 1
 		)`)
@@ -1034,5 +1034,7 @@ func scanExport(sc db.Scan) map[string]any {
 	out["exploration_mode"] = sc.ExplorationMode
 	out["exploration_path"] = sc.ExplorationPath
 	out["refusal_audit_warning"] = sc.RefusalAuditWarning
+	out["experiment"] = sc.Experiment
+	out["candidate_of_scan_id"] = sc.CandidateOfScanID
 	return out
 }

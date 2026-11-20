@@ -752,6 +752,7 @@ func newApp(f *flags, cfg *config.Config, log *slog.Logger, setup runnerSetup) (
 	srv.SkillsRepoSHA = skillsRepoSHA
 	srv.ModelProxy = worker.ModelProxyOf(runner)
 	srv.ScanEgressPolicies = slices.Sorted(maps.Keys(cfg.ScanEgressPolicies))
+	srv.ScanExperiments = cfg.ScanExperiments
 	srv.Version = version
 	build := readBuildMetadata()
 	srv.Commit = build.Commit

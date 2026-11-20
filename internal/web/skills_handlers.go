@@ -229,8 +229,9 @@ func (s *Server) skillRun(w http.ResponseWriter, r *http.Request) {
 		Model:        r.FormValue("model"),
 		EgressPolicy: strings.TrimSpace(r.FormValue("egress_policy")),
 		MaxCostUSD:   maxCost,
+		Experiment:   strings.TrimSpace(r.FormValue("experiment")),
 	})
-	if errors.Is(err, ErrUnknownEgressPolicy) || errors.Is(err, ErrInvalidMaxCost) {
+	if errors.Is(err, ErrUnknownEgressPolicy) || errors.Is(err, ErrInvalidMaxCost) || errors.Is(err, ErrInvalidExperiment) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}

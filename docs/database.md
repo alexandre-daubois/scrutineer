@@ -184,7 +184,9 @@ One row per skill execution or external import. `skill_name` / `skill_version` p
 | exploration_mode | text | Empty for ordinary scans; `random-dig` for an independent source audit or `adversarial-sweep` for an audit that challenges one threat-model exclusion. Its callback token only permits validating its own report. Exploratory scans cannot serve as diff baselines. |
 | exploration_path | text | Repository-relative source directory selected for an exploratory audit, or `.` for root-level random source. Persisted before the agent starts and preserved on retries. |
 | profile | text | Runner profile that ran the scan (e.g. `php`). Empty = the default runner image. Set explicitly via `?profile=` or auto-detected from the clone by `brief` before launch; persisted so retries reuse the choice. |
-| egress_policy | text | Name of the `scan_egress_policies` entry the operator picked for this scan in the Run skill menu. Empty when the scan has none. Set only from the operator UI and carried on retry; the skill API and automatic follow-up scans never set it. |
+| egress_policy | text | Name of the `scan_egress_policies` entry the operator picked for this scan in the Run skill menu. Empty when the scan has none. Set only from the operator UI and carried on retry; the skill API and automatic follow-up scans never set it. A candidate scan inherits its baseline's policy so both run with the same egress. |
+| experiment | text | Name of the `scan_experiments` entry tied to the scan. On an ordinary scan it is the candidate configuration the operator asked to trial from the Run skill menu. On a candidate scan it is the configuration that ran. Empty otherwise. A retried ordinary scan keeps it only while the entry is still configured. A retried candidate always keeps it. |
+| candidate_of_scan_id | integer | Nullable. Set on a candidate scan to the ordinary scan it is compared against. A candidate is enqueued once that scan finalizes, pinned to its `commit`, sub-path, scope, profile, egress policy, cost cap and rescan mode. Its findings go to `candidate_observations`, never to `findings` or `finding_observations`, its scan token may only read, stream into its own observations and validate its own report, and no follow-up hook fires for it. It fails when its commit, threat model or scan config differ from the baseline's recipe. Candidate scans never count as a repository's latest scan, a prerequisite or a diff baseline, and the skill API hides them from other scans. Retries keep it. |
 | backend | text | Agent CLI (`-backend`) that ran the scan: `claude`, `codex`, `opencode`, or `copilot`. Stamped by the worker so a retry after switching `-backend` starts fresh instead of passing one harness's session id to another's resume command. Empty on rows predating the column or that never reached the runner. |
 | provider | text | Provider prefix selected from an OpenCode model id, such as `groq` or `kiro`. Empty for other backends. |
 | runner_image | text | Provider base image selected for the scan, before the language profile is layered on it. |
@@ -521,6 +523,46 @@ Append-only record of each scan reporting a finding, findings imports included (
 | evidence | text | JSON object of the scan's other evidence fields (`locations`, `sinks`, `trace`, `boundary`, `validation`, `reach`, `affected`, `quality_tier`, `prior_art`, `dup_check`). Empty fields are omitted. |
 | created_at | datetime | |
 | updated_at | datetime | |
+
+## candidate_observations
+
+One row per finding a candidate scan reported. These rows never become findings: the comparison page at `/scans/{id}/experiment` lines them up with the baseline's `finding_observations` by fingerprint, which a candidate computes under its baseline's skill name so a candidate running another skill still matches. A retry writes its own rows and leaves the earlier run's in place. The text and `evidence` columns are untrusted model output, stored and shown as data. Repository deletion removes them.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | integer PK | |
+| scan_id | integer | The candidate scan. Unique with `fingerprint`, so a rewrite from the same scan (the final report after a streamed preview) refreshes the reported columns and keeps the assessment. |
+| repository_id | integer | Denormalized from the scan. |
+| report_finding_id | text | The finding's id inside the candidate report, e.g. `F1`. |
+| fingerprint | text | Fingerprint under the baseline scan's skill name. |
+| title | text | |
+| severity | text | |
+| confidence | text | |
+| cwe | text | |
+| location | text | |
+| reachability | text | |
+| rating | text | |
+| evidence | text | JSON object of the other evidence fields, as in `finding_observations.evidence`. |
+| assessment | text | Operator verdict: `confirmed`, `false_positive` or `unsure`. Empty until recorded. Confirming an observation does not create a finding. |
+| assessment_note | text | |
+| effort_minutes | integer | Nullable. Analyst minutes recorded with the assessment. Null shows as unavailable in the comparison. |
+| assessed_at | datetime | Nullable. |
+| created_at | datetime | |
+| updated_at | datetime | |
+
+## experiment_decisions
+
+Append-only operator decisions on the configuration a candidate scan ran with. A decision changes no setting: ordinary scans keep their model, effort and skill until the operator changes them. Repository deletion removes them.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | integer PK | |
+| repository_id | integer | |
+| candidate_scan_id | integer | The candidate scan the decision is about. |
+| experiment | text | The candidate's `scans.experiment` at the time. |
+| decision | text | `adopt` or `reject`. |
+| note | text | |
+| created_at | datetime | |
 
 ## remediation_attempts
 

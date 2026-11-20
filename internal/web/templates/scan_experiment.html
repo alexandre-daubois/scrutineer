@@ -1,0 +1,118 @@
+{{template "head" .}}
+{{$base := .Baseline}}
+{{template "crumbs" (crumbs
+  "Repositories" "/"
+  .Repo.Name (printf "/repositories/%d" .Repo.ID)
+  (printf "Scan #%d" $base.ID) (printf "/scans/%d" $base.ID)
+  "Experiment" "")}}
+
+<div class="mb-6">
+  <h2 class="text-2xl font-semibold flex items-center gap-2">
+    <i data-lucide="flask-conical"></i> Experiment {{$base.Experiment}}
+  </h2>
+  <p class="text-sm text-muted-foreground mt-1">Candidate runs of this configuration against <a class="hover:underline" href="/scans/{{$base.ID}}">scan #{{$base.ID}}</a> on the same commit. Candidate findings stay out of the repository's findings, and recording a decision here changes no setting.</p>
+</div>
+
+<h3 class="text-lg font-semibold mb-2">Runs</h3>
+<table class="table w-full mb-6">
+  <thead><tr>
+    <th>Scan</th><th>Role</th><th>Status</th><th>Skill</th><th>Model</th><th>Effort</th><th>Commit</th>
+    <th class="text-right">Findings</th><th class="text-right">Duration</th><th class="text-right">Tokens</th><th class="text-right">Cost</th>
+  </tr></thead>
+  <tbody>
+  {{template "experiment-run" (dict "Scan" $base "Role" "baseline")}}
+  {{range .Runs}}{{template "experiment-run" (dict "Scan" . "Role" "candidate")}}{{end}}
+  </tbody>
+</table>
+
+{{with .Candidate}}
+{{$cand := .}}
+<h3 class="text-lg font-semibold mb-2">Comparison with candidate scan #{{.ID}}</h3>
+{{if ne (status .Status) "done"}}<p class="text-sm text-muted-foreground mb-2">This run is {{status .Status}}{{with .Error}}: {{.}}{{end}}. Its observations may be incomplete.</p>{{end}}
+<dl class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6 text-sm">
+  <div><dt class="text-muted-foreground font-semibold">Reported by both</dt><dd>{{$.Summary.Shared}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Baseline only</dt><dd>{{$.Summary.BaselineOnly}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Candidate only</dt><dd>{{$.Summary.CandidateOnly}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Additional confirmed</dt><dd>{{$.Summary.AdditionalConfirmed}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Candidate false positives</dt><dd>{{$.Summary.FalsePositives}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Not yet assessed</dt><dd>{{$.Summary.Unassessed}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Analyst effort</dt><dd>{{if $.Summary.EffortRecorded}}{{$.Summary.EffortMinutes}} min{{else}}unavailable{{end}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Failed candidate runs</dt><dd>{{$.Summary.FailedRuns}}</dd></div>
+</dl>
+
+{{if $.Rows}}
+<table class="table w-full mb-6">
+  <thead><tr>
+    <th>Finding</th><th>Reported by</th><th>Baseline severity</th><th>Candidate severity</th><th>Repository finding</th><th>Assessment</th>
+  </tr></thead>
+  <tbody>
+  {{range $.Rows}}
+    <tr>
+      <td class="whitespace-normal">
+        {{if .Candidate}}<span class="font-medium">{{.Candidate.Title}}</span><div class="text-xs text-muted-foreground"><code>{{.Candidate.Location}}</code></div>
+        {{else}}<span class="font-medium">{{.Baseline.Title}}</span><div class="text-xs text-muted-foreground"><code>{{.Baseline.Location}}</code></div>{{end}}
+      </td>
+      <td>{{if and .Candidate .Baseline}}both{{else if .Candidate}}candidate only{{else}}baseline only{{end}}</td>
+      <td>{{with .Baseline}}{{sevlabel .Severity}}{{else}}<span class="text-muted-foreground">-</span>{{end}}</td>
+      <td>{{with .Candidate}}{{sevlabel .Severity}}{{else}}<span class="text-muted-foreground">-</span>{{end}}</td>
+      <td>{{if .FindingID}}<a class="hover:underline" href="/findings/{{.FindingID}}">#{{.FindingID}}</a> <span class="text-xs text-muted-foreground">{{fstatus .FindingStatus}}</span>{{else}}<span class="text-muted-foreground">none</span>{{end}}</td>
+      <td class="whitespace-normal">
+        {{with .Candidate}}
+        <form method="post" action="/candidate-observations/{{.ID}}/assessment" class="flex flex-wrap items-center gap-2">
+          <select class="select text-xs" name="assessment" aria-label="Assessment">
+            <option value="">Not assessed</option>
+            {{$current := .Assessment}}
+            {{range $.Assessments}}<option value="{{.}}" {{if eq . $current}}selected{{end}}>{{.}}</option>{{end}}
+          </select>
+          <input type="number" name="effort_minutes" min="0" step="1" class="input text-xs w-24" placeholder="Minutes" aria-label="Analyst minutes" value="{{with .EffortMinutes}}{{.}}{{end}}">
+          <input type="text" name="note" class="input text-xs w-48" placeholder="Note" aria-label="Assessment note" value="{{.AssessmentNote}}">
+          <button type="submit" class="btn-outline text-xs">Save</button>
+        </form>
+        {{else}}<span class="text-xs text-muted-foreground">Triaged on the repository finding</span>{{end}}
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="text-sm text-muted-foreground mb-6">Neither run reported a finding.</p>
+{{end}}
+
+<h3 class="text-lg font-semibold mb-2">Decision</h3>
+<p class="text-sm text-muted-foreground mb-2">Recording a decision keeps a trace of it. To apply an adopted configuration to ordinary scans, change the skill's model, the effort setting or the skill itself.</p>
+<form method="post" action="/scans/{{$cand.ID}}/experiment-decision" class="flex flex-wrap items-center gap-2 mb-4">
+  <select class="select text-xs" name="decision" aria-label="Decision">
+    <option value="adopt">adopt</option>
+    <option value="reject">reject</option>
+  </select>
+  <input type="text" name="note" class="input text-xs w-80" placeholder="Why" aria-label="Decision note">
+  <button type="submit" class="btn-outline text-xs">Record decision</button>
+</form>
+{{if $.Decisions}}
+<ul class="text-sm space-y-1 mb-6">
+  {{range $.Decisions}}<li><span class="font-medium">{{.Decision}}</span> <span class="text-muted-foreground">{{since .CreatedAt}}</span>{{with .Note}}: {{.}}{{end}}</li>{{end}}
+</ul>
+{{end}}
+{{else}}
+<p class="text-sm text-muted-foreground">{{if $base.Status.Terminal}}No candidate run exists for scan #{{$base.ID}}. One starts only once the scan records its findings and while the experiment's entry, model and skill still resolve. A refused start is logged on the server.{{else}}No candidate has run yet. One starts once scan #{{$base.ID}} records its findings.{{end}}</p>
+{{end}}
+
+{{define "experiment-run"}}
+{{with .Scan}}
+<tr>
+  <td><a class="hover:underline" href="{{if eq $.Role "baseline"}}/scans/{{.ID}}{{else}}/scans/{{.ID}}/experiment?candidate={{.ID}}{{end}}">#{{.ID}}</a>{{with .ParentScanID}} <span class="text-xs text-muted-foreground">retry of #{{.}}</span>{{end}}</td>
+  <td>{{$.Role}}</td>
+  <td>{{template "status-badge" (status .Status)}}</td>
+  <td>{{.SkillName}}</td>
+  <td class="whitespace-normal">{{.Model}}</td>
+  <td>{{if .Effort}}{{.Effort}}{{else}}<span class="text-muted-foreground">default</span>{{end}}</td>
+  <td>{{if .Commit}}<code class="text-xs">{{short .Commit}}</code>{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</td>
+  <td class="text-right">{{.FindingsCount}}</td>
+  <td class="text-right">{{if .Duration}}{{dur .Duration}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</td>
+  <td class="text-right">{{if or .TotalInputTokens .OutputTokens}}{{bignum .TotalInputTokens}} in / {{bignum .OutputTokens}} out{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</td>
+  <td class="text-right">{{if gt .CostUSD 0.0}}{{usd .CostUSD}}{{else}}<span class="text-muted-foreground"{{if .CostUnpriced}} data-tooltip="Tokens were recorded but no price is known for this model"{{end}}>unavailable</span>{{end}}</td>
+</tr>
+{{end}}
+{{end}}
+
+{{template "foot" .}}

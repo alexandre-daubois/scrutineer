@@ -188,16 +188,16 @@ func (w *Worker) unsatisfiedPrereqs(scan *db.Scan, names []string) (pending, dea
 
 func (w *Worker) scopedPrereqStatus(scan *db.Scan, name string, inFlight []db.ScanStatus) (prereqState, error) {
 	if scan.ScanGroup == "" {
-		return w.prereqStatus("repository_id = ? AND skill_name = ?",
+		return w.prereqStatus("repository_id = ? AND skill_name = ? AND candidate_of_scan_id IS NULL",
 			[]any{scan.RepositoryID, name}, inFlight)
 	}
-	state, err := w.prereqStatus("repository_id = ? AND skill_name = ? AND scan_group = ?",
+	state, err := w.prereqStatus("repository_id = ? AND skill_name = ? AND scan_group = ? AND candidate_of_scan_id IS NULL",
 		[]any{scan.RepositoryID, name, scan.ScanGroup}, inFlight)
 	if err != nil || state != prereqAbsent {
 		return state, err
 	}
 	var active int64
-	if err := w.DB.Model(&db.Scan{}).Where("repository_id = ? AND skill_name = ? AND status IN ?",
+	if err := w.DB.Model(&db.Scan{}).Where("repository_id = ? AND skill_name = ? AND status IN ? AND candidate_of_scan_id IS NULL",
 		scan.RepositoryID, name, inFlight).Count(&active).Error; err != nil {
 		return prereqAbsent, err
 	}

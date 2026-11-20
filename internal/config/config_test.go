@@ -682,6 +682,38 @@ func TestLoad_rejectsInvalidEgressPolicies(t *testing.T) {
 	}
 }
 
+func TestLoad_parsesScanExperiments(t *testing.T) {
+	c, err := Load(write(t, `
+scan_experiments:
+  sonnet-trial:
+    model: claude-sonnet-5
+    effort: low
+    skill: deep-dive-v2
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := c.ScanExperiments["sonnet-trial"]
+	if got != (ScanExperiment{Model: "claude-sonnet-5", Effort: "low", Skill: "deep-dive-v2"}) {
+		t.Errorf("scan_experiments.sonnet-trial = %+v", got)
+	}
+}
+
+func TestLoad_rejectsInvalidScanExperiments(t *testing.T) {
+	for _, tc := range []struct{ name, yaml, want string }{
+		{"empty entry", "scan_experiments:\n  trial: {}\n", "at least one"},
+		{"bad name", "scan_experiments:\n  Trial One:\n    effort: low\n", "experiment name"},
+		{"unknown effort", "scan_experiments:\n  trial:\n    effort: extreme\n", "effort"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(write(t, tc.yaml))
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "scan_experiments") {
+				t.Fatalf("Load error = %v, want a scan_experiments error mentioning %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoad_parsesScanEgressPolicies(t *testing.T) {
 	c, err := Load(write(t, `
 scan_egress_policies:

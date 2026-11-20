@@ -90,7 +90,7 @@ func loadWorkbench(gdb *gorm.DB, repo *db.Repository, seedReport string) Workben
 	// the history (and the diff that feeds off it) to root default-branch
 	// deep-dives so a recent subproject or branch run doesn't show its
 	// inventory drift as a model effect.
-	gdb.Where("repository_id = ? AND skill_name = ? AND status = ? AND sub_path = '' AND ref = '' AND report <> ''",
+	db.ProductionScans(gdb).Where("repository_id = ? AND skill_name = ? AND status = ? AND sub_path = '' AND ref = '' AND report <> ''",
 		repo.ID, deepDiveSkillName, db.ScanDone).
 		Order("id DESC").Limit(workbenchRunHistory).Find(&wb.Runs)
 	if len(wb.Runs) > 1 {

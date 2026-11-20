@@ -90,7 +90,7 @@ func loadBenchmarkRows(gdb *gorm.DB, skill, model, harness string) ([]benchmarkR
 }
 
 func latestBenchmarkScan(gdb *gorm.DB, repoID uint, skill, model, harness string) *db.Scan {
-	q := gdb.Where("repository_id = ? AND status = ?", repoID, db.ScanDone)
+	q := db.ProductionScans(gdb.Where("repository_id = ? AND status = ?", repoID, db.ScanDone))
 	if skill != "" {
 		q = q.Where("skill_name = ?", skill)
 	} else {

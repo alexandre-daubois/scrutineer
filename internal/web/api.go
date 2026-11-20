@@ -83,11 +83,27 @@ func (s *Server) apiAuth(next http.Handler) http.Handler {
 			writeAPIError(w, http.StatusForbidden, "exploratory audits may only validate their own report")
 			return
 		}
+		if scan.IsCandidate() && !candidateMayCall(r, &scan) {
+			writeAPIError(w, http.StatusForbidden, "candidate scans may only read, stream findings into their own observations and validate their own report")
+			return
+		}
 		ctx := context.WithValue(r.Context(), apiCtxKey{}, &scan)
 		ctx = db.WithAuditScan(ctx, scan.ID, scan.SkillName)
 		r.Body = http.MaxBytesReader(w, r.Body, apiMaxBody)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// candidateMayCall reports whether a candidate scan's token may make this
+// request. Reads are open as for any scan. The only writes are streaming a
+// finding, which lands in the candidate's own observations, and validating
+// its own report.
+func candidateMayCall(r *http.Request, scan *db.Scan) bool {
+	if r.Method == http.MethodGet {
+		return true
+	}
+	return r.Method == http.MethodPost && (r.URL.Path == fmt.Sprintf("/repositories/%d/findings", scan.RepositoryID) ||
+		r.URL.Path == fmt.Sprintf("/scans/%d/validate-report", scan.ID))
 }
 
 const apiMaxBody = 1 << 20
@@ -282,7 +298,7 @@ func (s *Server) apiListScans(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusForbidden, "scan may only list scans on its own repository")
 		return
 	}
-	q := s.DB.Where("repository_id = ?", id).Order("id desc")
+	q := db.ProductionScans(s.DB.Where("repository_id = ?", id)).Order("id desc")
 	if status := r.URL.Query().Get(statusKey); status != "" {
 		q = q.Where("status = ?", status)
 	}
@@ -318,6 +334,11 @@ func (s *Server) apiGetScan(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.scanOwnsRepo(r, sc.RepositoryID) {
 		writeAPIError(w, http.StatusForbidden, "scan may only read scans on its own repository")
+		return
+	}
+	// A candidate's report is not the repository's, so only the candidate reads it.
+	if sc.IsCandidate() && scanFromRequest(r).ID != sc.ID {
+		writeAPIError(w, http.StatusNotFound, "scan not found")
 		return
 	}
 	summary := scanSummary(sc)

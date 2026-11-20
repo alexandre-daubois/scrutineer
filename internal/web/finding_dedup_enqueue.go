@@ -174,6 +174,7 @@ func (s *Server) enqueueFindingDedupForRepo(ctx context.Context, repoID uint) {
 // finding-dedup. The sub_path term keeps two different monorepo sub-packages
 // from colliding on one skill's conflict check: activesupport and actionpack
 // can each run the same skill concurrently. Pass "" for a repo-root scan.
+// A candidate run does not count, since its results never reach the repository.
 func (s *Server) hasOpenRepoScopedScan(repoID, skillID uint, subPath string) bool {
-	return s.hasOpenScan("repository_id = ? AND skill_id = ? AND finding_id IS NULL AND COALESCE(sub_path, '') = ?", repoID, skillID, subPath)
+	return s.hasOpenScan("repository_id = ? AND skill_id = ? AND finding_id IS NULL AND COALESCE(sub_path, '') = ? AND candidate_of_scan_id IS NULL", repoID, skillID, subPath)
 }

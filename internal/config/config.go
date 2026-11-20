@@ -116,6 +116,11 @@ type Config struct {
 	// one scan from the repository page. Like EgressPolicies they are
 	// config-file-only and need --hardened. The name is what a scan records.
 	ScanEgressPolicies map[string]EgressPolicy `yaml:"scan_egress_policies"`
+	// ScanExperiments are named candidate configurations the operator can
+	// trial alongside one findings scan from the repository page. Only this
+	// file defines them: nothing a scan, a skill or the scanned repository
+	// says can pick a candidate's model, effort or skill.
+	ScanExperiments map[string]ScanExperiment `yaml:"scan_experiments"`
 	// Concurrency controls how many scans the worker runs in parallel.
 	// 0 or negative leaves the built-in default (see queue.DefaultWorkerConcurrency).
 	Concurrency int `yaml:"concurrency"`
@@ -409,6 +414,32 @@ func ValidateScanEgressPolicies(policies map[string]EgressPolicy) error {
 	})
 }
 
+// ScanExperiment is a candidate configuration. An empty field keeps the
+// ordinary scan's value, so a candidate differs only where the entry says.
+type ScanExperiment struct {
+	Model  string `yaml:"model"`
+	Effort string `yaml:"effort"`
+	Skill  string `yaml:"skill"`
+}
+
+// ValidateScanExperiments checks each experiment's name, which appears in form
+// values and on scan rows, and refuses an entry that changes nothing. Model and
+// skill names are checked against the running instance when a scan is launched.
+func ValidateScanExperiments(experiments map[string]ScanExperiment) error {
+	for name, exp := range experiments {
+		if !scanEgressPolicyName.MatchString(name) {
+			return fmt.Errorf("scan_experiments: experiment name %q must be 1 to 64 lowercase letters, digits, '.', '_' or '-' and start with a letter or digit", name)
+		}
+		if exp == (ScanExperiment{}) {
+			return fmt.Errorf("scan_experiments.%s: set at least one of model, effort or skill", name)
+		}
+		if err := ValidateEffort(exp.Effort); err != nil {
+			return fmt.Errorf("scan_experiments.%s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func validateEgressPolicySet(key, noun string, policies map[string]EgressPolicy, checkName func(string) error) error {
 	for name, policy := range policies {
 		if strings.TrimSpace(name) == "" {
@@ -682,6 +713,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if err := ValidateScanEgressPolicies(c.ScanEgressPolicies); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if err := ValidateScanExperiments(c.ScanExperiments); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if err := ValidatePackageRepositories(c.PackageRepositories); err != nil {

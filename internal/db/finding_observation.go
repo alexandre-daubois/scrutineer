@@ -43,29 +43,6 @@ type FindingObservation struct {
 // f must be the content the scan itself reported (not the stored canonical
 // row) and must already carry its database id.
 func ObservationFromFinding(scan *Scan, f *Finding) FindingObservation {
-	evidence := map[string]string{}
-	for k, v := range map[string]string{
-		"locations":    f.Locations,
-		"sinks":        f.Sinks,
-		"trace":        f.Trace,
-		"boundary":     f.Boundary,
-		"validation":   f.Validation,
-		"reach":        f.Reach,
-		"affected":     f.Affected,
-		"quality_tier": f.QualityTier,
-		"prior_art":    f.PriorArt,
-		"dup_check":    f.DupCheck,
-	} {
-		if v != "" {
-			evidence[k] = v
-		}
-	}
-	raw := ""
-	if len(evidence) > 0 {
-		if b, err := json.Marshal(evidence); err == nil {
-			raw = string(b)
-		}
-	}
 	return FindingObservation{
 		FindingID:       f.ID,
 		ScanID:          scan.ID,
@@ -83,8 +60,38 @@ func ObservationFromFinding(scan *Scan, f *Finding) FindingObservation {
 		Location:        f.Location,
 		Reachability:    f.Reachability,
 		Rating:          f.Rating,
-		Evidence:        raw,
+		Evidence:        observationEvidence(f),
 	}
+}
+
+// observationEvidence renders the finding's unpromoted evidence fields as a
+// JSON object, or "" when it has none.
+func observationEvidence(f *Finding) string {
+	evidence := map[string]string{}
+	for k, v := range map[string]string{
+		"locations":    f.Locations,
+		"sinks":        f.Sinks,
+		"trace":        f.Trace,
+		"boundary":     f.Boundary,
+		"validation":   f.Validation,
+		"reach":        f.Reach,
+		"affected":     f.Affected,
+		"quality_tier": f.QualityTier,
+		"prior_art":    f.PriorArt,
+		"dup_check":    f.DupCheck,
+	} {
+		if v != "" {
+			evidence[k] = v
+		}
+	}
+	if len(evidence) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(evidence)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 // RecordFindingObservation upserts each observation for its (finding, scan)

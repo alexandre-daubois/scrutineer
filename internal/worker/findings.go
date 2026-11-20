@@ -129,6 +129,8 @@ func dropStubFindings(findings []db.Finding, emit func(Event)) []db.Finding {
 // single finding object in the report.json finding shape; the scan's identity
 // (id, repo, commit, sub-path) is stamped from scan, never trusted from raw.
 // A PoCCaptureError returns the saved finding alongside the capture warning.
+// A candidate's finding goes to its candidate observations instead and comes
+// back without a database id.
 func (w *Worker) PersistStreamedFinding(scan *db.Scan, raw []byte) (*db.Finding, error) {
 	var sf scanFinding
 	if err := json.Unmarshal(raw, &sf); err != nil {
@@ -140,12 +142,23 @@ func (w *Worker) PersistStreamedFinding(scan *db.Scan, raw []byte) (*db.Finding,
 	if isStubEvidence(sf.Trace, sf.Boundary, sf.Validation) {
 		return nil, fmt.Errorf("%w: trace, boundary and validation are missing or placeholders; stream a finding only once its evidence is written", ErrInvalidFinding)
 	}
+	fingerprintSkill, err := w.fingerprintSkillName(scan)
+	if err != nil {
+		return nil, err
+	}
 	f := sf.toFinding(scan.ID, scan.RepositoryID, scan.Commit, scan.SubPath, scan.Model)
-	f.Fingerprint = db.FingerprintFinding(scan.SkillName, f.SubPath, f.CWE, f.Location, f.Title)
+	f.Fingerprint = db.FingerprintFinding(fingerprintSkill, f.SubPath, f.CWE, f.Location, f.Title)
 
 	srcDir := filepath.Join(w.scanWorkRoot(scan), "src")
 	f.VID = w.computeVID(srcDir, f.Locations)
 	f.Snippet = readSnippet(srcDir, f.Location)
+
+	if scan.IsCandidate() {
+		if err := db.RecordCandidateObservations(w.DB, db.CandidateObservationFromFinding(scan, &f)); err != nil {
+			return nil, fmt.Errorf("record candidate observation: %w", err)
+		}
+		return &f, nil
+	}
 
 	if _, err := w.persistFinding(scan, &f); err != nil {
 		if _, ok := errors.AsType[*PoCCaptureError](err); ok {

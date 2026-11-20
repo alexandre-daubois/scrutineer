@@ -44,6 +44,20 @@
   {{end}}
 </div>
 
+{{if .CandidateOfScanID}}
+<div class="alert mb-4">
+  <i data-lucide="flask-conical"></i>
+  <h2>Candidate scan for experiment {{.Experiment}}</h2>
+  <section>Compared against <a class="hover:underline" href="/scans/{{.CandidateOfScanID}}">scan #{{.CandidateOfScanID}}</a>. Its findings are kept apart from the repository's findings and start no follow-up scan. <a class="hover:underline" href="/scans/{{.ID}}/experiment">Open the comparison</a>.</section>
+</div>
+{{else if .Experiment}}
+<div class="alert mb-4">
+  <i data-lucide="flask-conical"></i>
+  <h2>Experiment {{.Experiment}}</h2>
+  <section>A candidate run of this configuration starts on the same commit once this scan records its findings. <a class="hover:underline" href="/scans/{{.ID}}/experiment">Open the comparison</a>.</section>
+</div>
+{{end}}
+
 {{with .VerificationFeedback}}
 <section class="border-b py-4 mb-4">
   <h3 class="text-sm font-medium mb-2">Verification feedback</h3>

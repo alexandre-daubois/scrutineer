@@ -134,7 +134,7 @@ func writeReportMetadata(b *strings.Builder, repo *db.Repository) {
 // the repo plus its parsed report JSON (if any).
 func latestDeepDive(gdb *gorm.DB, repoID uint) (*db.Scan, map[string]any) {
 	var scan db.Scan
-	if err := gdb.Where("repository_id = ? AND skill_name = ? AND status = ?",
+	if err := db.ProductionScans(gdb).Where("repository_id = ? AND skill_name = ? AND status = ?",
 		repoID, deepDiveSkillName, db.ScanDone).
 		Order("id desc").First(&scan).Error; err != nil {
 		return nil, nil

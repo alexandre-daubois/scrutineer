@@ -1071,7 +1071,7 @@ func (w *Worker) maybeFireScanFinalized(scan *db.Scan, runErr error) bool {
 	if scan.Status != db.ScanDone && !failOnThreshold {
 		return false
 	}
-	if w.OnScanFinalized != nil {
+	if w.OnScanFinalized != nil && !scan.IsCandidate() {
 		w.OnScanFinalized(scan)
 	}
 	return true
@@ -1084,7 +1084,7 @@ func (w *Worker) maybeFireScanFinalized(scan *db.Scan, runErr error) bool {
 // leaves every earlier sibling already suppressed on its account and nothing
 // left to re-trigger the work — the cohort silently gets no pass at all.
 func (w *Worker) maybeFireScanGroupSettled(scan *db.Scan) {
-	if w.OnScanGroupSettled == nil || scan.ScanGroup == "" || !scan.Status.Terminal() {
+	if w.OnScanGroupSettled == nil || scan.ScanGroup == "" || !scan.Status.Terminal() || scan.IsCandidate() {
 		return
 	}
 	w.OnScanGroupSettled(scan)
@@ -1104,7 +1104,7 @@ func (w *Worker) SettleScanGroup(scan *db.Scan) {
 }
 
 func (w *Worker) maybeFireScanFailed(scan *db.Scan) {
-	if w.OnScanFailed != nil && scan.Status == db.ScanFailed {
+	if w.OnScanFailed != nil && scan.Status == db.ScanFailed && !scan.IsCandidate() {
 		w.OnScanFailed(scan)
 	}
 }

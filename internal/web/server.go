@@ -30,6 +30,7 @@ import (
 	"gorm.io/gorm"
 
 	"scrutineer/internal/akrites"
+	"scrutineer/internal/config"
 	"scrutineer/internal/db"
 	"scrutineer/internal/queue"
 	"scrutineer/internal/repoconfig"
@@ -129,6 +130,10 @@ type Server struct {
 	// operator may attach to a scan from the repository page. Empty hides the
 	// picker and makes enqueueSkillWith refuse any policy name.
 	ScanEgressPolicies []string
+	// ScanExperiments are the scan_experiments entries an operator may trial
+	// alongside a findings scan. Empty hides the picker and makes
+	// enqueueSkillWith refuse any experiment name on an ordinary scan.
+	ScanExperiments map[string]config.ScanExperiment
 
 	MaxAgentAPIOpenScansPerRepository int
 
@@ -642,6 +647,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /scans/{id}", s.scanShow)
 	mux.HandleFunc("GET /scans/{id}/report.md", s.scanReport)
 	mux.HandleFunc("POST /scans/{id}/retry", s.scanRetry)
+	mux.HandleFunc("GET /scans/{id}/experiment", s.scanExperiment)
+	mux.HandleFunc("POST /scans/{id}/experiment-decision", s.scanExperimentDecision)
+	mux.HandleFunc("POST /candidate-observations/{id}/assessment", s.candidateObservationAssess)
 	mux.HandleFunc("POST /scans/{id}/resume", s.scanResume)
 	mux.HandleFunc("POST /scans/pause-queued", s.scansPauseQueued)
 	mux.HandleFunc("POST /scans/resume-paused", s.scansResumePaused)
@@ -1070,7 +1078,7 @@ func (s *Server) repoList(w http.ResponseWriter, r *http.Request) {
 		s.DB.Raw(`
 			SELECT s.* FROM scans s
 			JOIN (SELECT repository_id, MAX(id) AS max_id FROM scans
-				WHERE repository_id IN ? GROUP BY repository_id) latest
+				WHERE repository_id IN ? AND candidate_of_scan_id IS NULL GROUP BY repository_id) latest
 			ON latest.max_id = s.id
 		`, repoIDs).Scan(&scans)
 		for i := range scans {
@@ -1114,7 +1122,8 @@ func (s *Server) repoList(w http.ResponseWriter, r *http.Request) {
 			Ref          string
 		}
 		var refs []repoRef
-		s.DB.Model(&db.Scan{}).
+		// A candidate's ref is the commit it is pinned to, not a branch.
+		db.ProductionScans(s.DB.Model(&db.Scan{})).
 			Select("DISTINCT repository_id, ref").
 			Where("repository_id IN ? AND ref != ''", repoIDs).
 			Order("ref").
@@ -2636,6 +2645,8 @@ type repoShowView struct {
 	GlobalScanSchedule string
 	// ScanEgressPolicies feeds the Run skill form's egress policy picker.
 	ScanEgressPolicies []string
+	// ScanExperiments feeds the Run skill form's experiment picker.
+	ScanExperiments []string
 }
 
 func (s *Server) loadRepoShowView(
@@ -2694,6 +2705,7 @@ func (s *Server) loadRepoShowView(
 		TotalCost:          repoTotalCost(s.DB, repo.ID),
 		GlobalScanSchedule: globalSchedule,
 		ScanEgressPolicies: s.ScanEgressPolicies,
+		ScanExperiments:    slices.Sorted(maps.Keys(s.ScanExperiments)),
 	}
 }
 
@@ -2750,6 +2762,7 @@ func (v repoShowView) renderData() map[string]any {
 		"TabRowCap":          int64(tabRowCap),
 		"GlobalScanSchedule": v.GlobalScanSchedule,
 		"ScanEgressPolicies": v.ScanEgressPolicies,
+		"ScanExperiments":    v.ScanExperiments,
 	}
 }
 
@@ -2815,14 +2828,16 @@ func loadRepoLatestScanRows(gdb *gorm.DB, repoID uint) []db.Scan {
 func loadRepoLatestScansSelect(gdb *gorm.DB, repoID uint, columns string) []db.Scan {
 	var scans []db.Scan
 	// Show the latest attempt per skill, sub-path and focus area. Separate
-	// areas in a batch are independent jobs, not retries of one another.
+	// areas in a batch are independent jobs, not retries of one another, and a
+	// candidate run is not a retry of the ordinary scan it is compared against.
 	gdb.Raw(`
 		SELECT `+columns+` FROM scans s
 		JOIN (
 			SELECT COALESCE(skill_name, '') AS sn, COALESCE(sub_path, '') AS sp,
-			       COALESCE(focus_area, '') AS fa, MAX(id) AS max_id
+			       COALESCE(focus_area, '') AS fa,
+			       CASE WHEN candidate_of_scan_id IS NULL THEN 0 ELSE 1 END AS cand, MAX(id) AS max_id
 			FROM scans WHERE repository_id = ?
-			GROUP BY sn, sp, fa
+			GROUP BY sn, sp, fa, cand
 		) latest ON latest.max_id = s.id
 		ORDER BY s.id DESC
 	`, repoID).Scan(&scans)
@@ -2838,6 +2853,9 @@ func (s *Server) repoPrimaryScans(scans []db.Scan) (latest, threatModel *db.Scan
 	var fallback *db.Scan
 	for i := range scans {
 		sc := &scans[i]
+		if sc.IsCandidate() {
+			continue
+		}
 		switch sc.SkillName {
 		case deepDiveSkillName:
 			if latest == nil {
@@ -3201,7 +3219,7 @@ func (s *Server) repoScanAll(w http.ResponseWriter, r *http.Request) {
 	for _, sub := range subprojects {
 		subPath := sub.ScanSubPath()
 		var inflight int64
-		s.DB.Model(&db.Scan{}).
+		db.ProductionScans(s.DB.Model(&db.Scan{})).
 			Where("repository_id = ? AND sub_path = ? AND skill_id = ? AND status IN ?",
 				repo.ID, subPath, skill.ID, []db.ScanStatus{db.ScanQueued, db.ScanRunning}).
 			Where("COALESCE(focus_area, '') = '' AND COALESCE(exploration_mode, '') = ''").
@@ -3343,6 +3361,7 @@ func (s *Server) deleteRepository(repo db.Repository) (deletedRepository, error)
 			&db.Finding{}, &db.Scan{}, &db.Subproject{}, &db.Dependency{},
 			&db.Dependent{}, &db.Package{}, &db.Advisory{}, &db.AdvisoryAudit{}, &db.SBOMUpload{},
 			&db.PackageAlternative{}, &db.ExpectedFinding{}, &db.ComplianceControl{}, &db.ScanGroupBudget{}, &db.ImportArtifact{},
+			&db.CandidateObservation{}, &db.ExperimentDecision{},
 		} {
 			if err := tx.Where("repository_id = ?", repo.ID).Delete(child).Error; err != nil {
 				return err
@@ -3682,6 +3701,12 @@ type ScanOpts struct {
 	// ImportPayload is an ingest report or a retained reflection snapshot;
 	// the worker stages it at import/report. Empty for other enqueues.
 	ImportPayload []byte
+	// Experiment names a scan_experiments entry. Like EgressPolicy it is
+	// operator-only: the repository page form and the retry paths fill it.
+	Experiment string
+	// CandidateOfScanID marks the enqueue as the candidate run of that
+	// ordinary scan. Only enqueueCandidate and the retry paths set it.
+	CandidateOfScanID *uint
 }
 
 // enqueueSkillScoped is a thin shim preserved for call sites that already
@@ -3820,6 +3845,8 @@ func (s *Server) enqueueSkillWith(ctx context.Context, repoID, skillID uint, opt
 		ParentScanID:         opts.ParentScanID,
 		VerificationFeedback: opts.VerificationFeedback,
 		ImportPayload:        opts.ImportPayload,
+		Experiment:           opts.Experiment,
+		CandidateOfScanID:    opts.CandidateOfScanID,
 		SkillsRepoSHA:        s.SkillsRepoSHA,
 		APIToken:             NewAPIToken(),
 	}
@@ -3877,7 +3904,7 @@ func prepareCreatedScan(tx *gorm.DB, scan *db.Scan, opts ScanOpts) error {
 
 func (s *Server) skillEnqueuePreflight(repo db.Repository, skillID uint, opts ScanOpts) (db.Skill, bool, error) {
 	var sk db.Skill
-	hasSkill := s.DB.Select("name, version, metadata, requires_remote, requires_profile, model, source_path").First(&sk, skillID).Error == nil
+	hasSkill := s.DB.Select("name, version, metadata, requires_remote, requires_profile, model, source_path, output_kind").First(&sk, skillID).Error == nil
 	if hasSkill && opts.FindingID != nil {
 		if err := s.ensureFindingReportable(*opts.FindingID, sk.Name); err != nil {
 			return db.Skill{}, false, err
@@ -3888,6 +3915,9 @@ func (s *Server) skillEnqueuePreflight(repo db.Repository, skillID uint, opts Sc
 	}
 	if hasSkill && sk.RequiresProfile != "" && opts.Profile != "" && opts.Profile != sk.RequiresProfile {
 		return db.Skill{}, false, fmt.Errorf("%w: %q needs %q, got %q", ErrSkillProfileMismatch, sk.Name, sk.RequiresProfile, opts.Profile)
+	}
+	if err := s.validateExperimentEnqueue(opts, sk); err != nil {
+		return db.Skill{}, false, err
 	}
 	return sk, hasSkill, nil
 }

@@ -412,6 +412,8 @@ func (s *Server) scanRetry(w http.ResponseWriter, r *http.Request) {
 		ResumedFromScanID:    resumeOf,
 		ParentScanID:         &scan.ID,
 		VerificationFeedback: scan.VerificationFeedback,
+		Experiment:           s.retainedExperiment(scan),
+		CandidateOfScanID:    scan.CandidateOfScanID,
 		// An ingest scan's input is the uploaded payload, not ./src;
 		// without it the retry stages no import/report and the model
 		// runs against a missing file.
@@ -422,7 +424,7 @@ func (s *Server) scanRetry(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusPreconditionFailed)
 			return
 		}
-		if errors.Is(err, ErrUnknownEgressPolicy) || errors.Is(err, ErrInvalidMaxCost) {
+		if errors.Is(err, ErrUnknownEgressPolicy) || errors.Is(err, ErrInvalidMaxCost) || errors.Is(err, ErrInvalidExperiment) {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
@@ -490,13 +492,15 @@ func (s *Server) scansRetryFailed(w http.ResponseWriter, r *http.Request) {
 	q.Count(&totalFailed)
 
 	// Skip a failed scan when a newer queued/running/done/failed/paused scan
-	// supersedes the same (repository, skill, sub_path, ref, finding_id) tuple.
+	// supersedes the same (repository, skill, sub_path, ref, finding_id,
+	// candidate_of_scan_id) tuple, so an ordinary run and a candidate never
+	// stand in for each other.
 	// An unscoped focus area supersedes and is superseded by any area, while two
 	// scoped runs only supersede each other when their areas match. Cancelled is
 	// deliberately absent: a user-cancelled newer run must not block retrying an
 	// older genuine failure.
 	var scans []db.Scan
-	err = q.Select("id, repository_id, skill_id, model, effort, finding_id, remediation_attempt_id, sub_path, scope_mode, ref, profile, egress_policy, max_cost_usd, rescan_mode, diff_base_scan_id, scan_group, focus_area, triage_scan_id, fallback_from_scan_id, exploration_mode, exploration_path, backend, status, session_id, resumed_from_scan_id, import_payload, verification_feedback").
+	err = q.Select("id, repository_id, skill_id, model, effort, finding_id, remediation_attempt_id, sub_path, scope_mode, ref, profile, egress_policy, max_cost_usd, rescan_mode, diff_base_scan_id, scan_group, focus_area, triage_scan_id, fallback_from_scan_id, exploration_mode, exploration_path, backend, status, session_id, resumed_from_scan_id, import_payload, verification_feedback, experiment, candidate_of_scan_id").
 		Where(`NOT EXISTS (
 			SELECT 1 FROM scans n
 			WHERE n.id > scans.id
@@ -505,6 +509,7 @@ func (s *Server) scansRetryFailed(w http.ResponseWriter, r *http.Request) {
 			  AND COALESCE(n.sub_path, '') = COALESCE(scans.sub_path, '')
 			  AND COALESCE(n.ref, '') = COALESCE(scans.ref, '')
 			  AND COALESCE(n.finding_id, 0) = COALESCE(scans.finding_id, 0)
+			  AND COALESCE(n.candidate_of_scan_id, 0) = COALESCE(scans.candidate_of_scan_id, 0)
 			  AND (
 				COALESCE(n.focus_area, '') = COALESCE(scans.focus_area, '')
 				OR COALESCE(n.focus_area, '') = ''
@@ -546,6 +551,8 @@ func (s *Server) scansRetryFailed(w http.ResponseWriter, r *http.Request) {
 			ResumedFromScanID:    resumeOf,
 			ParentScanID:         &parent,
 			VerificationFeedback: sc.VerificationFeedback,
+			Experiment:           s.retainedExperiment(sc),
+			CandidateOfScanID:    sc.CandidateOfScanID,
 			ImportPayload:        sc.ImportPayload,
 		}); err != nil {
 			if errors.Is(err, db.ErrFindingNonViable) {

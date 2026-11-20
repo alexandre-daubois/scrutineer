@@ -70,6 +70,12 @@ type ScanRecipe struct {
 	ParentScanID         *uint  `json:"parent_scan_id,omitempty"`
 	VerificationFeedback string `json:"verification_feedback,omitempty"`
 
+	// Experiment and CandidateOfScanID identify a candidate run and the
+	// ordinary scan it is compared against. On an ordinary scan Experiment
+	// names the candidate configuration it asked to trial.
+	Experiment        string `json:"experiment,omitempty"`
+	CandidateOfScanID *uint  `json:"candidate_of_scan_id,omitempty"`
+
 	// ThreatModelSHA256 and ScanConfigSHA256 digest the Repository text in
 	// effect at claim time, so a rerun after an edit is distinguishable
 	// from one before it. Absent when the repository had none set.
@@ -116,6 +122,8 @@ func buildScanRecipe(scan *db.Scan, backend, threatModel, scanConfig string) (st
 		DiffBaseScanID:       scan.DiffBaseScanID,
 		ParentScanID:         scan.ParentScanID,
 		VerificationFeedback: scan.VerificationFeedback,
+		Experiment:           scan.Experiment,
+		CandidateOfScanID:    scan.CandidateOfScanID,
 		ThreatModelSHA256:    textDigest(threatModel),
 		ScanConfigSHA256:     textDigest(scanConfig),
 	}

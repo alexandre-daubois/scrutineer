@@ -78,6 +78,9 @@ Only the operator UI can attach a scan policy. The scan-token skill API ignores
 any `egress_policy` it is sent and every automatic follow-up scan (hooks such
 as revalidate, dedup, exploratory, focus-area, reflection and triage children)
 starts without one, so a scan cannot hand its egress to the scans it starts.
+The one exception is a candidate scan from a `scan_experiments` trial, which
+inherits the policy the operator picked for the scan it is compared against so
+both run with the same egress.
 Request bodies never carry hosts or ports, only a policy name that must already
 exist in the config.
 
