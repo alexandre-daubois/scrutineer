@@ -118,17 +118,14 @@ func (s *Server) experimentSkill(exp config.ScanExperiment, fallback uint) (uint
 
 // enqueueCandidate starts the candidate run of a finalized ordinary scan that
 // asked for an experiment. The candidate is pinned to the commit the baseline
-// resolved and copies its scope, so only the experiment's settings differ.
+// resolved and copies its scope, so only the experiment's settings differ. A
+// candidate that cannot start is recorded as a failed candidate run with the
+// reason, so the comparison counts it instead of hiding it in the server log.
 func (s *Server) enqueueCandidate(scan *db.Scan) {
 	if scan.Experiment == "" || scan.IsCandidate() || scan.SkillID == nil {
 		return
 	}
 	log := s.Log.With("scan", scan.ID, "experiment", scan.Experiment)
-	exp, err := parseExperimentConfig(scan.ExperimentConfig)
-	if err != nil {
-		log.Warn("candidate not started", "err", err)
-		return
-	}
 	var existing int64
 	if err := s.DB.Model(&db.Scan{}).Where("candidate_of_scan_id = ?", scan.ID).Count(&existing).Error; err != nil {
 		log.Error("candidate not started: look up existing candidate", "err", err)
@@ -137,16 +134,25 @@ func (s *Server) enqueueCandidate(scan *db.Scan) {
 	if existing > 0 {
 		return
 	}
-	if err := s.checkExperimentConfig(exp); err != nil {
+	if err := s.startCandidate(scan); err != nil {
 		log.Warn("candidate not started", "err", err)
-		return
+		s.recordRefusedCandidate(scan, err)
+	}
+}
+
+func (s *Server) startCandidate(scan *db.Scan) error {
+	exp, err := parseExperimentConfig(scan.ExperimentConfig)
+	if err != nil {
+		return err
+	}
+	if err := s.checkExperimentConfig(exp); err != nil {
+		return err
 	}
 	skillID, err := s.experimentSkill(exp, *scan.SkillID)
 	if err != nil {
-		log.Warn("candidate not started", "err", err)
-		return
+		return err
 	}
-	if _, err := s.enqueueSkillWith(context.Background(), scan.RepositoryID, skillID, ScanOpts{
+	_, err = s.enqueueSkillWith(context.Background(), scan.RepositoryID, skillID, ScanOpts{
 		AuditSource:       db.SourceSystem,
 		Model:             cmp.Or(exp.Model, scan.Model),
 		Effort:            cmp.Or(exp.Effort, scan.Effort),
@@ -161,8 +167,41 @@ func (s *Server) enqueueCandidate(scan *db.Scan) {
 		Experiment:        scan.Experiment,
 		ExperimentConfig:  scan.ExperimentConfig,
 		CandidateOfScanID: &scan.ID,
-	}); err != nil {
-		log.Error("enqueue candidate", "err", err)
+	})
+	return err
+}
+
+// recordRefusedCandidate stores a candidate that never ran as a failed
+// candidate scan carrying the refusal. It holds no API token and is never
+// queued.
+func (s *Server) recordRefusedCandidate(scan *db.Scan, reason error) {
+	now := time.Now()
+	exp, _ := parseExperimentConfig(scan.ExperimentConfig)
+	skillID, skillName := scan.SkillID, scan.SkillName
+	if id, err := s.experimentSkill(exp, 0); err == nil && id != 0 {
+		skillID, skillName = &id, exp.Skill
+	}
+	row := db.Scan{
+		RepositoryID:      scan.RepositoryID,
+		Kind:              scan.Kind,
+		Status:            db.ScanFailed,
+		StatusPriority:    db.StatusPriorityFor(db.ScanFailed),
+		Model:             cmp.Or(exp.Model, scan.Model),
+		Effort:            cmp.Or(exp.Effort, scan.Effort),
+		SkillID:           skillID,
+		SkillName:         skillName,
+		Ref:               cmp.Or(scan.Commit, scan.Ref),
+		SubPath:           scan.SubPath,
+		ScopeMode:         scan.ScopeMode,
+		Experiment:        scan.Experiment,
+		ExperimentConfig:  scan.ExperimentConfig,
+		CandidateOfScanID: &scan.ID,
+		Error:             "candidate not started: " + reason.Error(),
+		StartedAt:         &now,
+		FinishedAt:        &now,
+	}
+	if err := s.DB.Create(&row).Error; err != nil {
+		s.Log.Error("record refused candidate", "scan", scan.ID, "err", err)
 	}
 }
 
@@ -210,14 +249,23 @@ type experimentSummary struct {
 	// earlier scan reported.
 	AdditionalConfirmed int
 	FalsePositives      int
+	// KnownConfirmed counts confirmed candidate-only observations that match a
+	// repository finding an earlier scan reported but the baseline missed.
+	KnownConfirmed int
 	// BaselineFalsePositives counts baseline observations whose repository
-	// finding was rejected.
+	// finding was rejected, out of BaselineTriaged whose finding an analyst
+	// has moved past new or enriched.
 	BaselineFalsePositives int
+	BaselineTriaged        int
+	BaselineObservations   int
 	// EffortMinutes sums the analyst time recorded on EffortCount of the
 	// candidate's observations.
 	EffortMinutes int
 	EffortCount   int
 	FailedRuns    int
+	// IncompleteRuns counts candidate runs that were cancelled or stopped by
+	// their cost cap or turn limit before covering everything.
+	IncompleteRuns int
 }
 
 // scanExperiment renders the comparison between an ordinary scan and the
@@ -263,8 +311,11 @@ func (s *Server) scanExperiment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, run := range runs {
-		if run.Status == db.ScanFailed {
+		switch {
+		case run.Status == db.ScanFailed:
 			summary.FailedRuns++
+		case run.Status == db.ScanCancelled, run.CostCapped, run.MaxTurnsHit:
+			summary.IncompleteRuns++
 		}
 	}
 	var decisions []db.ExperimentDecision
@@ -331,7 +382,7 @@ func (s *Server) compareExperiment(baseline, candidate db.Scan) ([]experimentRow
 		c := &cand[i]
 		row := experimentRow{Candidate: c, Baseline: baseByFP[c.Fingerprint]}
 		row.FindingID, row.FindingStatus = findings[c.Fingerprint].ID, findings[c.Fingerprint].Status
-		summary.tally(c, row.Baseline == nil && row.FindingID == 0)
+		summary.tally(c, row.Baseline == nil, row.FindingID != 0)
 		if row.Baseline == nil {
 			candidateOnly = append(candidateOnly, row)
 			continue
@@ -342,8 +393,13 @@ func (s *Server) compareExperiment(baseline, candidate db.Scan) ([]experimentRow
 	var baselineOnly []experimentRow
 	for i := range base {
 		b := &base[i]
-		if findings[b.Fingerprint].Status == db.FindingRejected {
+		switch findings[b.Fingerprint].Status {
+		case db.FindingNew, db.FindingEnriched, "":
+		case db.FindingRejected:
+			summary.BaselineTriaged++
 			summary.BaselineFalsePositives++
+		default:
+			summary.BaselineTriaged++
 		}
 		if matched[b.Fingerprint] {
 			continue
@@ -351,17 +407,20 @@ func (s *Server) compareExperiment(baseline, candidate db.Scan) ([]experimentRow
 		baselineOnly = append(baselineOnly, experimentRow{Baseline: b, FindingID: b.FindingID, FindingStatus: findings[b.Fingerprint].Status})
 	}
 	summary.Shared, summary.BaselineOnly, summary.CandidateOnly = len(shared), len(baselineOnly), len(candidateOnly)
-	summary.Observations = len(cand)
+	summary.Observations, summary.BaselineObservations = len(cand), len(base)
 	return slices.Concat(candidateOnly, baselineOnly, shared), summary, nil
 }
 
-func (sum *experimentSummary) tally(c *db.CandidateObservation, unknownToRepository bool) {
+func (sum *experimentSummary) tally(c *db.CandidateObservation, candidateOnly, knownToRepository bool) {
 	switch c.Assessment {
 	case "":
 		sum.Unassessed++
 	case db.CandidateConfirmed:
 		sum.Assessed++
-		if unknownToRepository {
+		switch {
+		case candidateOnly && knownToRepository:
+			sum.KnownConfirmed++
+		case candidateOnly:
 			sum.AdditionalConfirmed++
 		}
 	case db.CandidateFalsePositive:

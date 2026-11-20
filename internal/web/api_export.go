@@ -1036,6 +1036,7 @@ func scanExport(sc db.Scan) map[string]any {
 	out["refusal_audit_warning"] = sc.RefusalAuditWarning
 	out["experiment"] = sc.Experiment
 	out["experiment_config"] = sc.ExperimentConfig
+	out["staged_inputs_sha256"] = sc.StagedInputsSHA256
 	out["candidate_of_scan_id"] = sc.CandidateOfScanID
 	return out
 }

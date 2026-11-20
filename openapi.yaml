@@ -2398,6 +2398,9 @@ components:
             experiment_config:
               type: string
               description: JSON snapshot of the scan_experiments entry (model, effort, skill) taken when the ordinary scan was launched and carried onto its candidate. Empty when experiment is.
+            staged_inputs_sha256:
+              type: string
+              description: SHA-256 of the threat model and analyst feedback staged for a scan tied to an experiment. A candidate fails when it differs from its baseline's. Empty on scans outside an experiment.
             candidate_of_scan_id:
               type: integer
               format: int64

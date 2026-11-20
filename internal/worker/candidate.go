@@ -10,7 +10,7 @@ import (
 // candidateBaseline loads the ordinary scan a candidate is compared against.
 func (w *Worker) candidateBaseline(scan *db.Scan) (db.Scan, error) {
 	var baseline db.Scan
-	if err := w.DB.Select("id", "skill_name", "ref", "commit", "recipe", "staged_threat_model_sha256").First(&baseline, *scan.CandidateOfScanID).Error; err != nil {
+	if err := w.DB.Select("id", "skill_name", "ref", "commit", "recipe", "staged_inputs_sha256").First(&baseline, *scan.CandidateOfScanID).Error; err != nil {
 		return db.Scan{}, fmt.Errorf("load baseline scan %d: %w", *scan.CandidateOfScanID, err)
 	}
 	return baseline, nil
@@ -18,8 +18,10 @@ func (w *Worker) candidateBaseline(scan *db.Scan) (db.Scan, error) {
 
 // checkCandidateInputs fails a candidate whose source commit or scan config
 // differs from what its baseline ran against, so the comparison never reads a
-// change of inputs as a change of configuration. The threat model is checked
-// once staged, by pinStagedThreatModel.
+// change of inputs as a change of configuration. The scan config compared is
+// the one this run applies, not the candidate's recipe, which a resumed run
+// keeps from its first claim. The threat model and analyst feedback are
+// checked once staged, by pinStagedInputs.
 func (w *Worker) checkCandidateInputs(scan *db.Scan) error {
 	baseline, err := w.candidateBaseline(scan)
 	if err != nil {
@@ -28,14 +30,11 @@ func (w *Worker) checkCandidateInputs(scan *db.Scan) error {
 	if scan.Commit != baseline.Commit {
 		return fmt.Errorf("candidate source commit %q differs from baseline scan #%d commit %q", scan.Commit, baseline.ID, baseline.Commit)
 	}
-	var want, got ScanRecipe
+	var want ScanRecipe
 	if err := json.Unmarshal([]byte(baseline.Recipe), &want); err != nil {
 		return fmt.Errorf("baseline scan #%d has no readable recipe: %w", baseline.ID, err)
 	}
-	if err := json.Unmarshal([]byte(scan.Recipe), &got); err != nil {
-		return fmt.Errorf("candidate scan #%d has no readable recipe: %w", scan.ID, err)
-	}
-	if got.ScanConfigSHA256 != want.ScanConfigSHA256 {
+	if textDigest(scan.Repository.ScanConfig) != want.ScanConfigSHA256 {
 		return fmt.Errorf("repository scan config changed since baseline scan #%d ran", baseline.ID)
 	}
 	return nil
@@ -81,18 +80,21 @@ func (w *Worker) parseCandidateOutput(skill *db.Skill, scan *db.Scan, report str
 	return nil
 }
 
-// pinStagedThreatModel records the digest of the threat model staged for a scan
-// tied to an experiment and fails a candidate whose digest differs from its
-// baseline's. The digest is taken after promotion filtering, which follows live
-// review state, so it catches a change the raw repository text does not show.
-func (w *Worker) pinStagedThreatModel(scan *db.Scan, model string) error {
+// pinStagedInputs records a digest of the threat model and analyst feedback
+// staged for a scan tied to an experiment, and fails a candidate whose digest
+// differs from its baseline's. Both are filtered against live review state, so
+// the digest catches changes the raw repository text does not show.
+func (w *Worker) pinStagedInputs(scan *db.Scan, model string, feedback []db.FindingFeedback) error {
 	if scan.Experiment == "" {
 		return nil
 	}
-	digest := textDigest(model)
-	scan.StagedThreatModelSHA256 = digest
-	if err := w.DB.Model(&db.Scan{}).Where("id = ?", scan.ID).Update("staged_threat_model_sha256", digest).Error; err != nil {
-		return fmt.Errorf("record staged threat model digest: %w", err)
+	digest, err := stagedInputsDigest(model, feedback)
+	if err != nil {
+		return err
+	}
+	scan.StagedInputsSHA256 = digest
+	if err := w.DB.Model(&db.Scan{}).Where("id = ?", scan.ID).Update("staged_inputs_sha256", digest).Error; err != nil {
+		return fmt.Errorf("record staged inputs digest: %w", err)
 	}
 	if !scan.IsCandidate() {
 		return nil
@@ -101,8 +103,23 @@ func (w *Worker) pinStagedThreatModel(scan *db.Scan, model string) error {
 	if err != nil {
 		return err
 	}
-	if baseline.StagedThreatModelSHA256 != digest {
-		return fmt.Errorf("the threat model staged for this candidate differs from the one baseline scan #%d ran with", baseline.ID)
+	if baseline.StagedInputsSHA256 != digest {
+		return fmt.Errorf("the threat model or analyst feedback staged for this candidate differs from what baseline scan #%d ran with", baseline.ID)
 	}
 	return nil
+}
+
+// stagedInputsDigest is "" when nothing was staged, like textDigest.
+func stagedInputsDigest(model string, feedback []db.FindingFeedback) (string, error) {
+	if model == "" && len(feedback) == 0 {
+		return "", nil
+	}
+	staged, err := json.Marshal(struct {
+		ThreatModel string               `json:"threat_model"`
+		Feedback    []db.FindingFeedback `json:"feedback"`
+	}{model, feedback})
+	if err != nil {
+		return "", fmt.Errorf("digest staged inputs: %w", err)
+	}
+	return textDigest(string(staged)), nil
 }

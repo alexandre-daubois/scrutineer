@@ -52,9 +52,7 @@ func TestEnqueueCandidate_inheritsTheBaselineExecutionSettings(t *testing.T) {
 	s.DB.Model(&stale).Updates(settings)
 	stale = reloadScan(t, s, stale.ID)
 	s.enqueueCandidate(&stale)
-	if got := candidatesOf(t, s, stale.ID); len(got) != 0 {
-		t.Errorf("a baseline whose egress policy was removed started %d candidates, want 0", len(got))
-	}
+	requireRefusedCandidate(t, s, stale.ID, "registries")
 }
 
 // An experiment skill that requires another runner profile than the baseline ran with starts no candidate.
@@ -69,12 +67,16 @@ func TestEnqueueCandidate_refusesAnExperimentSkillNeedingAnotherProfile(t *testi
 		s.DB.Model(&baseline).Update("profile", profile)
 		baseline.Profile = profile
 		s.enqueueCandidate(&baseline)
-		got := candidatesOf(t, s, baseline.ID)
-		if len(got) != want {
-			t.Errorf("baseline profile %q: %d candidates, want %d", profile, len(got), want)
+		if want == 0 {
+			requireRefusedCandidate(t, s, baseline.ID, "gpu-runner")
 			continue
 		}
-		if want == 1 && (got[0].Profile != "gpu-runner" || got[0].SkillID == nil || *got[0].SkillID != fx.variant.ID) {
+		got := candidatesOf(t, s, baseline.ID)
+		if len(got) != 1 || got[0].Status != db.ScanQueued {
+			t.Errorf("baseline profile %q: candidates %+v, want one queued", profile, got)
+			continue
+		}
+		if got[0].Profile != "gpu-runner" || got[0].SkillID == nil || *got[0].SkillID != fx.variant.ID {
 			t.Errorf("candidate = profile %q skill %v, want the variant skill on gpu-runner", got[0].Profile, got[0].SkillID)
 		}
 	}

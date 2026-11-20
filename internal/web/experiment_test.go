@@ -72,6 +72,17 @@ func experimentSnapshot(t *testing.T, exp config.ScanExperiment) string {
 	return string(b)
 }
 
+// requireRefusedCandidate asserts the baseline's only candidate is a failed
+// run that never started, with reason in its error.
+func requireRefusedCandidate(t *testing.T, s *Server, baselineID uint, reason string) {
+	t.Helper()
+	got := candidatesOf(t, s, baselineID)
+	if len(got) != 1 || got[0].Status != db.ScanFailed || !strings.Contains(got[0].Error, "candidate not started") ||
+		!strings.Contains(got[0].Error, reason) || got[0].APIToken != "" {
+		t.Fatalf("candidates = %+v, want one failed run that never started, naming %q", got, reason)
+	}
+}
+
 func candidatesOf(t *testing.T, s *Server, baselineID uint) []db.Scan {
 	t.Helper()
 	var scans []db.Scan
@@ -188,9 +199,7 @@ func TestEnqueueCandidate_runsTheLaunchSnapshot(t *testing.T) {
 	stale := finishedBaseline(t, s, fx)
 	stale.ExperimentConfig = experimentSnapshot(t, config.ScanExperiment{Model: "no-such-model"})
 	s.enqueueCandidate(&stale)
-	if got := candidatesOf(t, s, stale.ID); len(got) != 0 {
-		t.Errorf("a snapshot naming an unconfigured model started %d candidates", len(got))
-	}
+	requireRefusedCandidate(t, s, stale.ID, "no-such-model")
 }
 
 func TestCandidate_endToEndLeavesProductionFindingsAndFollowUpsAlone(t *testing.T) {
@@ -543,11 +552,15 @@ func TestScanExperiment_comparesRunsAndKeepsMissingMeasurementsUnavailable(t *te
 	page := getRepoPagePath(t, s, fmt.Sprintf("/scans/%d/experiment", baseline.ID))
 	for _, want := range []string{
 		"Experiment trial", "Path traversal", "candidate only", "baseline only", "XSS",
-		"Additional confirmed</dt><dd>1</dd>", "Candidate analyst effort</dt><dd>25 min on 1 of 2</dd>", "Assessed</dt><dd>1 of 2</dd>",
-		"Baseline analyst effort</dt><dd><span", ">unavailable<",
+		"Assessed</dt><dd>1 of 2</dd>", "Baseline analyst effort</dt><dd><span", ">unavailable<",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("comparison page lacks %q", want)
+		}
+	}
+	for label, want := range map[string]string{"Additional confirmed": "1 of 1 assessed", "Candidate analyst effort": "25 min on 1 of 2"} {
+		if got := experimentMeasurement(t, page, label); got != want {
+			t.Errorf("%s = %q, want %q", label, got, want)
 		}
 	}
 	if strings.Contains(page, fmt.Sprintf("experiment?candidate=%d\"", baseline.ID)) {

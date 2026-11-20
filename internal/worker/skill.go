@@ -1622,7 +1622,7 @@ func (w *Worker) stageWorkspace(ctx context.Context, workRoot, skillDir string, 
 	if err != nil {
 		return skillContext{}, fmt.Errorf("filter promoted feedback: %w", err)
 	}
-	if err := w.pinStagedThreatModel(scan, model); err != nil {
+	if err := w.pinStagedInputs(scan, model, feedback); err != nil {
 		return skillContext{}, err
 	}
 	staged := *scan

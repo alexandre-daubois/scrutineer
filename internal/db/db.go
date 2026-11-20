@@ -429,10 +429,10 @@ type Scan struct {
 	// when the ordinary scan was launched, copied onto its candidate. The
 	// candidate runs the snapshot, not the entry as it stands later.
 	ExperimentConfig string `gorm:"type:text"`
-	// StagedThreatModelSHA256 digests the threat model staged for a scan tied
-	// to an experiment, after promotion filtering. A candidate fails when its
-	// digest differs from its baseline's.
-	StagedThreatModelSHA256 string
+	// StagedInputsSHA256 digests the threat model and analyst feedback staged
+	// for a scan tied to an experiment, after filtering against live review
+	// state. A candidate fails when its digest differs from its baseline's.
+	StagedInputsSHA256 string
 
 	// Recipe is an immutable JSON snapshot (worker.ScanRecipe) of the
 	// inputs the worker was handed, written once inside the transaction

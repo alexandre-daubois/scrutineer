@@ -45,7 +45,7 @@ func newCandidateJob(t *testing.T, runner fakeRunner) *candidateJob {
 		t.Fatal(err)
 	}
 	if err := w.DB.Model(baseline).Updates(map[string]any{
-		"recipe": recipe, "staged_threat_model_sha256": textDigest(repo.ThreatModel),
+		"recipe": recipe, "staged_inputs_sha256": stagedDigest(t, repo.ThreatModel),
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -209,4 +209,13 @@ func TestCandidateJob_hardScopeIsNotWidened(t *testing.T) {
 			}
 		})
 	}
+}
+
+func stagedDigest(t *testing.T, model string) string {
+	t.Helper()
+	digest, err := stagedInputsDigest(model, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
 }

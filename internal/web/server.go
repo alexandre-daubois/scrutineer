@@ -1028,7 +1028,7 @@ func (s *Server) repoList(w http.ResponseWriter, r *http.Request) {
 		// default so active repos surface. COALESCE pushes never-scanned repos
 		// last. The Status badge is computed live for display, but sorting can
 		// use the indexed column, exactly as /scans does.
-		q = q.Order(orderByExpr("COALESCE((SELECT MIN(status_priority) FROM scans WHERE scans.repository_id = repositories.id), 99)", dir, false)).Order("updated_at desc")
+		q = q.Order(orderByExpr("COALESCE((SELECT MIN(status_priority) FROM scans WHERE scans.repository_id = repositories.id AND scans.candidate_of_scan_id IS NULL), 99)", dir, false)).Order("updated_at desc")
 	default:
 		sortCol, dir = defaultSort, ""
 		q = q.Order("updated_at desc")
@@ -1104,7 +1104,7 @@ func (s *Server) repoList(w http.ResponseWriter, r *http.Request) {
 					END, s.id DESC
 				) AS rn
 				FROM scans s
-				WHERE s.repository_id IN ?
+				WHERE s.repository_id IN ? AND s.candidate_of_scan_id IS NULL
 			) ranked
 			WHERE rn = 1
 		`, db.ScanRunning, db.ScanQueued, db.ScanPaused, repoIDs).Scan(&scans)

@@ -33,13 +33,15 @@
   <div><dt class="text-muted-foreground font-semibold">Reported by both</dt><dd>{{$.Summary.Shared}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Baseline only</dt><dd>{{$.Summary.BaselineOnly}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Candidate only</dt><dd>{{$.Summary.CandidateOnly}}</dd></div>
-  <div><dt class="text-muted-foreground font-semibold">Additional confirmed</dt><dd>{{if $.Summary.Assessed}}{{$.Summary.AdditionalConfirmed}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
-  <div><dt class="text-muted-foreground font-semibold">Candidate false positives</dt><dd>{{if $.Summary.Assessed}}{{$.Summary.FalsePositives}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
-  <div><dt class="text-muted-foreground font-semibold">Baseline false positives</dt><dd>{{$.Summary.BaselineFalsePositives}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Assessed</dt><dd>{{$.Summary.Assessed}} of {{$.Summary.Observations}}</dd></div>
-  <div><dt class="text-muted-foreground font-semibold">Candidate analyst effort</dt><dd>{{if $.Summary.EffortCount}}{{$.Summary.EffortMinutes}} min on {{$.Summary.EffortCount}} of {{$.Summary.Observations}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Additional confirmed</dt><dd>{{template "experiment-assessed-count" (dict "N" $.Summary.AdditionalConfirmed "S" $.Summary)}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Confirmed, already known</dt><dd>{{template "experiment-assessed-count" (dict "N" $.Summary.KnownConfirmed "S" $.Summary)}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Candidate false positives</dt><dd>{{template "experiment-assessed-count" (dict "N" $.Summary.FalsePositives "S" $.Summary)}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Baseline false positives</dt><dd>{{if $.Summary.BaselineTriaged}}{{$.Summary.BaselineFalsePositives}} <span class="text-muted-foreground">of {{$.Summary.BaselineTriaged}} triaged</span>{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Candidate analyst effort</dt><dd>{{if $.Summary.EffortCount}}{{$.Summary.EffortMinutes}} min <span class="text-muted-foreground">on {{$.Summary.EffortCount}} of {{$.Summary.Observations}}</span>{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Baseline analyst effort</dt><dd><span class="text-muted-foreground" data-tooltip="Scrutineer records no analyst time on repository findings">unavailable</span></dd></div>
   <div><dt class="text-muted-foreground font-semibold">Failed candidate runs</dt><dd>{{$.Summary.FailedRuns}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Incomplete candidate runs</dt><dd>{{$.Summary.IncompleteRuns}}</dd></div>
 </dl>
 
 {{if $.Rows}}
@@ -53,6 +55,8 @@
       <td class="whitespace-normal">
         {{if .Candidate}}<span class="font-medium">{{.Candidate.Title}}</span><div class="text-xs text-muted-foreground"><code>{{.Candidate.Location}}</code></div>
         {{else}}<span class="font-medium">{{.Baseline.Title}}</span><div class="text-xs text-muted-foreground"><code>{{.Baseline.Location}}</code></div>{{end}}
+        {{with .Baseline}}{{template "experiment-evidence" (dict "Side" "Baseline" "CWE" .CWE "Confidence" .Confidence "Reachability" .Reachability "Rating" .Rating "Evidence" .Evidence)}}{{end}}
+        {{with .Candidate}}{{template "experiment-evidence" (dict "Side" "Candidate" "CWE" .CWE "Confidence" .Confidence "Reachability" .Reachability "Rating" .Rating "Evidence" .Evidence)}}{{end}}
       </td>
       <td>{{if and .Candidate .Baseline}}both{{else if .Candidate}}candidate only{{else}}baseline only{{end}}</td>
       <td>{{with .Baseline}}{{sevlabel .Severity}}{{else}}<span class="text-muted-foreground">-</span>{{end}}</td>
@@ -98,7 +102,22 @@
 </ul>
 {{end}}
 {{else}}
-<p class="text-sm text-muted-foreground">{{if $base.Status.Terminal}}No candidate run exists for scan #{{$base.ID}}. One starts only once the scan records its findings and while the model and skill of the experiment as launched still resolve. A refused start is logged on the server.{{else}}No candidate has run yet. One starts once scan #{{$base.ID}} records its findings.{{end}}</p>
+<p class="text-sm text-muted-foreground">{{if $base.Status.Terminal}}No candidate run exists for scan #{{$base.ID}}. One starts only once the scan records its findings. A candidate that could not start appears above as a failed run with its reason.{{else}}No candidate has run yet. One starts once scan #{{$base.ID}} records its findings.{{end}}</p>
+{{end}}
+
+{{define "experiment-assessed-count"}}{{if .S.Assessed}}{{.N}}{{if lt .S.Assessed .S.Observations}} <span class="text-muted-foreground">of {{.S.Assessed}} assessed</span>{{end}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}{{end}}
+
+{{define "experiment-evidence"}}
+<details class="text-xs mt-1">
+  <summary class="cursor-pointer text-muted-foreground">{{.Side}} evidence</summary>
+  <dl class="grid grid-cols-[auto_1fr] gap-x-2 mt-1">
+    <dt class="text-muted-foreground">CWE</dt><dd>{{if .CWE}}{{.CWE}}{{else}}-{{end}}</dd>
+    <dt class="text-muted-foreground">Confidence</dt><dd>{{if .Confidence}}{{.Confidence}}{{else}}-{{end}}</dd>
+    <dt class="text-muted-foreground">Reachability</dt><dd>{{if .Reachability}}{{.Reachability}}{{else}}-{{end}}</dd>
+  </dl>
+  {{with .Rating}}<p class="whitespace-pre-wrap mt-1">{{.}}</p>{{end}}
+  {{with .Evidence}}<pre class="whitespace-pre-wrap break-words mt-1">{{prettyjson .}}</pre>{{end}}
+</details>
 {{end}}
 
 {{define "experiment-run"}}

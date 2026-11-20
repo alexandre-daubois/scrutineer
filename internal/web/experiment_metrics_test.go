@@ -82,8 +82,8 @@ func TestScanExperiment_talliesFalsePositivesAndAssessed(t *testing.T) {
 	assessObservation(t, s, extra.ID, url.Values{"assessment": {db.CandidateFalsePositive}})
 	page := getRepoPagePath(t, s, fmt.Sprintf("/scans/%d/experiment", baseline.ID))
 	for label, want := range map[string]string{
-		"Candidate false positives": "1",
-		"Additional confirmed":      "0",
+		"Candidate false positives": "1 of 1 assessed",
+		"Additional confirmed":      "0 of 1 assessed",
 		"Assessed":                  "1 of 2",
 	} {
 		if got := experimentMeasurement(t, page, label); got != want {
@@ -124,14 +124,17 @@ func TestScanExperiment_additionalConfirmedSkipsFindingsTheRepositoryAlreadyHas(
 	if got := experimentMeasurement(t, page, "Candidate only"); got != "2" {
 		t.Fatalf("Candidate only = %q, want 2", got)
 	}
-	if got := experimentMeasurement(t, page, "Additional confirmed"); got != "0" {
-		t.Errorf("Additional confirmed = %q with only an already known finding confirmed, want 0", got)
+	if got := experimentMeasurement(t, page, "Additional confirmed"); got != "0 of 1 assessed" {
+		t.Errorf("Additional confirmed = %q with only an already known finding confirmed, want 0 of 1 assessed", got)
+	}
+	if got := experimentMeasurement(t, page, "Confirmed, already known"); got != "1 of 1 assessed" {
+		t.Errorf("Confirmed, already known = %q, want 1 of 1 assessed", got)
 	}
 
 	assessObservation(t, s, extra.ID, url.Values{"assessment": {db.CandidateConfirmed}})
 	page = getRepoPagePath(t, s, fmt.Sprintf("/scans/%d/experiment", baseline.ID))
-	if got := experimentMeasurement(t, page, "Additional confirmed"); got != "1" {
-		t.Errorf("Additional confirmed = %q after confirming a finding only another repository has, want 1", got)
+	if got := experimentMeasurement(t, page, "Additional confirmed"); got != "1 of 2 assessed" {
+		t.Errorf("Additional confirmed = %q after confirming a finding only another repository has, want 1 of 2 assessed", got)
 	}
 }
 
@@ -141,8 +144,8 @@ func TestScanExperiment_baselineFalsePositivesCountRejectedBaselineFindings(t *t
 	defer done()
 	baseline, candidate, _ := seedComparison(t, s)
 	page := getRepoPagePath(t, s, fmt.Sprintf("/scans/%d/experiment", baseline.ID))
-	if got := experimentMeasurement(t, page, "Baseline false positives"); got != "0" {
-		t.Fatalf("Baseline false positives = %q before any rejection, want 0", got)
+	if got := experimentMeasurement(t, page, "Baseline false positives"); got != "unavailable" {
+		t.Fatalf("Baseline false positives = %q before any triage, want unavailable", got)
 	}
 
 	s.DB.Model(&db.Finding{}).Where("fingerprint = ?", "fp-missed").Update("status", db.FindingRejected)
@@ -152,8 +155,8 @@ func TestScanExperiment_baselineFalsePositivesCountRejectedBaselineFindings(t *t
 	s.DB.Create(&db.CandidateObservation{ScanID: candidate.ID, RepositoryID: baseline.RepositoryID, Fingerprint: "fp-known", Title: "Open redirect", Severity: "Low"})
 
 	page = getRepoPagePath(t, s, fmt.Sprintf("/scans/%d/experiment", baseline.ID))
-	if got := experimentMeasurement(t, page, "Baseline false positives"); got != "1" {
-		t.Errorf("Baseline false positives = %q, want 1 for the rejected baseline finding only", got)
+	if got := experimentMeasurement(t, page, "Baseline false positives"); got != "1 of 1 triaged" {
+		t.Errorf("Baseline false positives = %q, want 1 of 1 triaged for the rejected baseline finding only", got)
 	}
 }
 

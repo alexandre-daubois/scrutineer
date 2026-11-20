@@ -188,7 +188,7 @@ func TestCandidate_inputsMustMatchTheBaseline(t *testing.T) {
 			baseline, candidate := candidatePair(t, w, repo)
 			w.DB.Model(baseline).Update("recipe", recipe(t, baseline, "tm", "cfg"))
 			candidate.Commit = tc.commit
-			candidate.Recipe = recipe(t, candidate, tc.tm, tc.config)
+			candidate.Repository.ScanConfig = tc.config
 			err := w.checkCandidateInputs(candidate)
 			if tc.want == "" {
 				if err != nil {
@@ -282,25 +282,41 @@ func TestCandidate_contextCarriesTheBaselineRef(t *testing.T) {
 func TestCandidate_stagedThreatModelMustMatchTheBaseline(t *testing.T) {
 	w, repo := observationWorker(t)
 	baseline, candidate := candidatePair(t, w, repo)
-	if err := w.pinStagedThreatModel(baseline, "model as staged"); err != nil {
+	if err := w.pinStagedInputs(baseline, "model as staged", nil); err != nil {
 		t.Fatal(err)
 	}
 	var stored db.Scan
 	w.DB.First(&stored, baseline.ID)
-	if stored.StagedThreatModelSHA256 == "" || stored.StagedThreatModelSHA256 != baseline.StagedThreatModelSHA256 {
-		t.Fatalf("baseline digest = %q, want it recorded", stored.StagedThreatModelSHA256)
+	if stored.StagedInputsSHA256 == "" || stored.StagedInputsSHA256 != baseline.StagedInputsSHA256 {
+		t.Fatalf("baseline digest = %q, want it recorded", stored.StagedInputsSHA256)
 	}
-	if err := w.pinStagedThreatModel(candidate, "model as staged"); err != nil {
+	if err := w.pinStagedInputs(candidate, "model as staged", nil); err != nil {
 		t.Errorf("same staged model: err = %v, want nil", err)
 	}
-	err := w.pinStagedThreatModel(candidate, "model with one promotion retired")
-	if err == nil || !strings.Contains(err.Error(), "differs from the one baseline scan") {
+	err := w.pinStagedInputs(candidate, "model with one promotion retired", nil)
+	if err == nil || !strings.Contains(err.Error(), "differs from what baseline scan") {
 		t.Errorf("different staged model: err = %v, want a refusal", err)
 	}
 
 	plain := &db.Scan{RepositoryID: repo.ID, Kind: JobSkill, Status: db.ScanRunning}
 	w.DB.Create(plain)
-	if err := w.pinStagedThreatModel(plain, "anything"); err != nil || plain.StagedThreatModelSHA256 != "" {
-		t.Errorf("a scan outside any experiment: err %v digest %q, want neither", err, plain.StagedThreatModelSHA256)
+	if err := w.pinStagedInputs(plain, "anything", nil); err != nil || plain.StagedInputsSHA256 != "" {
+		t.Errorf("a scan outside any experiment: err %v digest %q, want neither", err, plain.StagedInputsSHA256)
+	}
+}
+
+func TestCandidate_stagedFeedbackMustMatchTheBaseline(t *testing.T) {
+	w, repo := observationWorker(t)
+	baseline, candidate := candidatePair(t, w, repo)
+	feedback := []db.FindingFeedback{{ReviewID: 1, FindingID: 2, Path: "a.go", Reason: "sanitized upstream"}}
+	if err := w.pinStagedInputs(baseline, "model", feedback); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.pinStagedInputs(candidate, "model", feedback); err != nil {
+		t.Errorf("same feedback: err = %v, want nil", err)
+	}
+	err := w.pinStagedInputs(candidate, "model", append(feedback, db.FindingFeedback{ReviewID: 3, FindingID: 4, Path: "a.go", Reason: "test only"}))
+	if err == nil || !strings.Contains(err.Error(), "analyst feedback") {
+		t.Errorf("feedback added since the baseline: err = %v, want a refusal", err)
 	}
 }
