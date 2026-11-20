@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -55,11 +56,20 @@ func finishedBaseline(t *testing.T, s *Server, fx experimentFixture) db.Scan {
 	t.Helper()
 	scan := db.Scan{RepositoryID: fx.repo.ID, Kind: worker.JobSkill, Status: db.ScanDone, SkillID: &fx.findings.ID,
 		SkillName: fx.findings.Name, Model: "baseline-model", Effort: "high", Commit: "0123abcd", SubPath: "pkg",
-		ScopeMode: "soft", Experiment: "trial"}
+		ScopeMode: "soft", Experiment: "trial", ExperimentConfig: experimentSnapshot(t, s.ScanExperiments["trial"])}
 	if err := s.DB.Create(&scan).Error; err != nil {
 		t.Fatal(err)
 	}
 	return scan
+}
+
+func experimentSnapshot(t *testing.T, exp config.ScanExperiment) string {
+	t.Helper()
+	b, err := json.Marshal(exp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func candidatesOf(t *testing.T, s *Server, baselineID uint) []db.Scan {
@@ -150,23 +160,36 @@ func TestOnScanFinalized_enqueuesOneCandidatePinnedToTheBaseline(t *testing.T) {
 	}
 }
 
-func TestEnqueueCandidate_skipsCandidatesAndUnconfiguredExperiments(t *testing.T) {
+func TestEnqueueCandidate_runsTheLaunchSnapshot(t *testing.T) {
 	s, done := newTestServer(t)
 	defer done()
 	fx := seedExperimentFixture(t, s)
 	baseline := finishedBaseline(t, s, fx)
+	s.ScanExperiments["trial"] = config.ScanExperiment{Effort: "max"}
 	s.enqueueCandidate(&baseline)
 	candidate := candidatesOf(t, s, baseline.ID)[0]
+	if candidate.Model != fx.candidate || candidate.Effort != "low" || candidate.ExperimentConfig != baseline.ExperimentConfig {
+		t.Errorf("candidate = model %q effort %q config %q, want the snapshot taken at launch", candidate.Model, candidate.Effort, candidate.ExperimentConfig)
+	}
 	s.enqueueCandidate(&candidate)
 	if got := candidatesOf(t, s, candidate.ID); len(got) != 0 {
 		t.Errorf("a candidate started %d candidates of its own", len(got))
 	}
 
-	other := finishedBaseline(t, s, fx)
 	delete(s.ScanExperiments, "trial")
-	s.enqueueCandidate(&other)
-	if got := candidatesOf(t, s, other.ID); len(got) != 0 {
-		t.Errorf("an unconfigured experiment started %d candidates", len(got))
+	removed := finishedBaseline(t, s, fx)
+	s.DB.Model(&removed).Update("experiment_config", baseline.ExperimentConfig)
+	removed.ExperimentConfig = baseline.ExperimentConfig
+	s.enqueueCandidate(&removed)
+	if got := candidatesOf(t, s, removed.ID); len(got) != 1 {
+		t.Errorf("removing the entry after launch started %d candidates, want 1 from the snapshot", len(got))
+	}
+
+	stale := finishedBaseline(t, s, fx)
+	stale.ExperimentConfig = experimentSnapshot(t, config.ScanExperiment{Model: "no-such-model"})
+	s.enqueueCandidate(&stale)
+	if got := candidatesOf(t, s, stale.ID); len(got) != 0 {
+		t.Errorf("a snapshot naming an unconfigured model started %d candidates", len(got))
 	}
 }
 
@@ -260,33 +283,32 @@ func TestScanRetry_keepsACandidateACandidate(t *testing.T) {
 // A retried ordinary scan keeps its experiment only while the entry, its model and its skill still resolve.
 func TestScanRetry_ordinaryScanKeepsOnlyAnExperimentThatStillResolves(t *testing.T) {
 	for name, tc := range map[string]struct {
-		configure func(map[string]config.ScanExperiment)
-		want      string
+		snapshot func(fx experimentFixture) config.ScanExperiment
+		removed  bool
+		want     string
 	}{
-		"still configured": {func(map[string]config.ScanExperiment) {}, "trial"},
-		"removed entry":    {func(m map[string]config.ScanExperiment) { delete(m, "trial") }, ""},
-		"unconfigured model": {func(m map[string]config.ScanExperiment) {
-			m["trial"] = config.ScanExperiment{Model: "no-such-model"}
-		}, ""},
-		"missing skill": {func(m map[string]config.ScanExperiment) {
-			m["trial"] = config.ScanExperiment{Skill: "missing-skill"}
-		}, ""},
+		"still configured":   {func(fx experimentFixture) config.ScanExperiment { return config.ScanExperiment{Model: fx.candidate} }, false, "trial"},
+		"entry removed":      {func(fx experimentFixture) config.ScanExperiment { return config.ScanExperiment{Model: fx.candidate} }, true, "trial"},
+		"unconfigured model": {func(experimentFixture) config.ScanExperiment { return config.ScanExperiment{Model: "no-such-model"} }, false, ""},
+		"missing skill":      {func(experimentFixture) config.ScanExperiment { return config.ScanExperiment{Skill: "missing-skill"} }, false, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, done := newTestServer(t)
 			defer done()
 			fx := seedExperimentFixture(t, s)
 			baseline := finishedBaseline(t, s, fx)
-			s.DB.Model(&baseline).Update("status", db.ScanFailed)
-			tc.configure(s.ScanExperiments)
+			s.DB.Model(&baseline).Updates(map[string]any{"status": db.ScanFailed, "experiment_config": experimentSnapshot(t, tc.snapshot(fx))})
+			if tc.removed {
+				delete(s.ScanExperiments, "trial")
+			}
 
 			if w := postForm(t, s, fmt.Sprintf("/scans/%d/retry", baseline.ID), url.Values{}); w.Code != http.StatusSeeOther {
 				t.Fatalf("retry status %d: %s", w.Code, w.Body)
 			}
 			var retry db.Scan
 			s.DB.Where("parent_scan_id = ?", baseline.ID).First(&retry)
-			if retry.Experiment != tc.want || retry.IsCandidate() {
-				t.Errorf("retry = experiment %q candidate %v, want an ordinary scan with experiment %q", retry.Experiment, retry.IsCandidate(), tc.want)
+			if retry.Experiment != tc.want || retry.IsCandidate() || (tc.want == "") != (retry.ExperimentConfig == "") {
+				t.Errorf("retry = experiment %q config %q candidate %v, want an ordinary scan with experiment %q", retry.Experiment, retry.ExperimentConfig, retry.IsCandidate(), tc.want)
 			}
 		})
 	}
@@ -501,7 +523,7 @@ func seedComparison(t *testing.T, s *Server) (db.Scan, db.Scan, db.CandidateObse
 		s.DB.Create(&db.FindingObservation{FindingID: f.ID, ScanID: baseline.ID, RepositoryID: fx.repo.ID, Fingerprint: f.Fingerprint, Title: f.Title, Severity: f.Severity})
 	}
 	candidate := db.Scan{RepositoryID: fx.repo.ID, Kind: worker.JobSkill, Status: db.ScanDone, SkillName: fx.variant.Name,
-		Model: fx.candidate, Commit: baseline.Commit, Experiment: "trial", CandidateOfScanID: &baseline.ID}
+		Model: fx.candidate, Commit: baseline.Commit, Experiment: "trial", ExperimentConfig: baseline.ExperimentConfig, CandidateOfScanID: &baseline.ID}
 	s.DB.Create(&candidate)
 	extra := db.CandidateObservation{ScanID: candidate.ID, RepositoryID: fx.repo.ID, Fingerprint: "fp-new", Title: "Path traversal", Severity: "Critical"}
 	s.DB.Create(&db.CandidateObservation{ScanID: candidate.ID, RepositoryID: fx.repo.ID, Fingerprint: "fp-shared", Title: "SQLi", Severity: "Low"})
@@ -521,7 +543,8 @@ func TestScanExperiment_comparesRunsAndKeepsMissingMeasurementsUnavailable(t *te
 	page := getRepoPagePath(t, s, fmt.Sprintf("/scans/%d/experiment", baseline.ID))
 	for _, want := range []string{
 		"Experiment trial", "Path traversal", "candidate only", "baseline only", "XSS",
-		"Additional confirmed</dt><dd>1</dd>", "Analyst effort</dt><dd>25 min</dd>", ">unavailable<",
+		"Additional confirmed</dt><dd>1</dd>", "Candidate analyst effort</dt><dd>25 min on 1 of 2</dd>", "Assessed</dt><dd>1 of 2</dd>",
+		"Baseline analyst effort</dt><dd><span", ">unavailable<",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("comparison page lacks %q", want)
@@ -618,7 +641,54 @@ func TestScanExperimentDecision_recordsOnlyOnCandidates(t *testing.T) {
 	var after db.Skill
 	s.DB.Where("name = ?", "security-deep-dive").First(&after)
 	if after.Model != before.Model {
-		t.Errorf("adopting changed the skill model from %q to %q", before.Model, after.Model)
+		t.Errorf("adopting a skill swap changed the ordinary skill's model from %q to %q", before.Model, after.Model)
+	}
+	if !strings.Contains(decisions[0].Applied, "skill deep-dive-v2") || !strings.Contains(decisions[0].Applied, "effort low") {
+		t.Errorf("applied = %q, want the skill and effort left to the operator", decisions[0].Applied)
+	}
+}
+
+func TestScanExperimentDecision_adoptingAModelSetsItOnTheOrdinarySkill(t *testing.T) {
+	s, done := newTestServer(t)
+	defer done()
+	baseline, candidate, _ := seedComparison(t, s)
+	model := Models[len(Models)-1].ID
+	snapshot := experimentSnapshot(t, config.ScanExperiment{Model: model})
+	s.DB.Model(&candidate).Update("experiment_config", snapshot)
+	s.DB.Model(&db.Skill{}).Where("id = ?", *baseline.SkillID).Update("model", "")
+
+	page := getRepoPagePath(t, s, fmt.Sprintf("/scans/%d/experiment", baseline.ID))
+	if !strings.Contains(page, "Adopting sets security-deep-dive model to "+model) {
+		t.Error("the decision form does not say what adopting applies")
+	}
+	if w := postForm(t, s, fmt.Sprintf("/scans/%d/experiment-decision", candidate.ID), url.Values{"decision": {db.ExperimentReject}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("reject status %d: %s", w.Code, w.Body)
+	}
+	var skill db.Skill
+	s.DB.First(&skill, *baseline.SkillID)
+	if skill.Model != "" {
+		t.Fatalf("rejecting set the skill model to %q", skill.Model)
+	}
+	if w := postForm(t, s, fmt.Sprintf("/scans/%d/experiment-decision", candidate.ID), url.Values{"decision": {db.ExperimentAdopt}}); w.Code != http.StatusSeeOther {
+		t.Fatalf("adopt status %d: %s", w.Code, w.Body)
+	}
+	s.DB.First(&skill, *baseline.SkillID)
+	if skill.Model != model {
+		t.Errorf("skill model after adopt = %q, want %q", skill.Model, model)
+	}
+	var adopted db.ExperimentDecision
+	s.DB.Where("decision = ?", db.ExperimentAdopt).First(&adopted)
+	if adopted.Applied != "sets security-deep-dive model to "+model {
+		t.Errorf("applied = %q", adopted.Applied)
+	}
+
+	s.DB.Model(&candidate).Update("experiment_config", experimentSnapshot(t, config.ScanExperiment{Model: "no-such-model"}))
+	if w := postForm(t, s, fmt.Sprintf("/scans/%d/experiment-decision", candidate.ID), url.Values{"decision": {db.ExperimentAdopt}}); w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("adopting an unconfigured model: status %d, want 422", w.Code)
+	}
+	s.DB.First(&skill, *baseline.SkillID)
+	if skill.Model != model {
+		t.Errorf("a refused adopt changed the skill model to %q", skill.Model)
 	}
 }
 

@@ -206,7 +206,7 @@ func (s *Server) runScheduledScan(
 	}
 	var inflight int64
 	if err := s.DB.Model(&db.Scan{}).
-		Where("repository_id = ? AND status IN ?", repo.ID, []db.ScanStatus{db.ScanQueued, db.ScanRunning, db.ScanPaused}).
+		Where("repository_id = ? AND status IN ? AND candidate_of_scan_id IS NULL", repo.ID, []db.ScanStatus{db.ScanQueued, db.ScanRunning, db.ScanPaused}).
 		Count(&inflight).Error; err != nil {
 		s.Log.Error("scheduler: count in-flight scans", "repo", repo.Name, "err", err)
 		return

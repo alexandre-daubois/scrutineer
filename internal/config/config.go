@@ -417,9 +417,22 @@ func ValidateScanEgressPolicies(policies map[string]EgressPolicy) error {
 // ScanExperiment is a candidate configuration. An empty field keeps the
 // ordinary scan's value, so a candidate differs only where the entry says.
 type ScanExperiment struct {
-	Model  string `yaml:"model"`
-	Effort string `yaml:"effort"`
-	Skill  string `yaml:"skill"`
+	Model  string `yaml:"model" json:"model,omitempty"`
+	Effort string `yaml:"effort" json:"effort,omitempty"`
+	Skill  string `yaml:"skill" json:"skill,omitempty"`
+}
+
+// UnmarshalYAML refuses keys an experiment cannot vary, such as backend or
+// egress_policy, which would otherwise be dropped and leave the operator
+// believing the trial changed them.
+func (e *ScanExperiment) UnmarshalYAML(node *yaml.Node) error {
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if key := node.Content[i].Value; !slices.Contains([]string{"model", "effort", "skill"}, key) {
+			return fmt.Errorf("scan_experiments: unknown key %q, an experiment sets only model, effort and skill", key)
+		}
+	}
+	type plain ScanExperiment
+	return node.Decode((*plain)(e))
 }
 
 // ValidateScanExperiments checks each experiment's name, which appears in form

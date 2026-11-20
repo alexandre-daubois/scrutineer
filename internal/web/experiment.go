@@ -3,6 +3,7 @@ package web
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 
 	"scrutineer/internal/config"
 	"scrutineer/internal/db"
@@ -22,15 +25,20 @@ var ErrInvalidExperiment = errors.New("invalid scan experiment")
 const findingsOutputKind = "findings"
 
 // validateExperimentEnqueue keeps experiments to repository-scoped findings
-// scans and keeps a candidate out of every scan group and triage cohort, so
-// none of its output can reach a sibling. Model and skill names are checked
-// here, at launch, so a bad entry fails the form instead of the candidate.
-func (s *Server) validateExperimentEnqueue(opts ScanOpts, sk db.Skill) error {
+// scans of remote repositories, where the candidate can be pinned to the
+// commit its baseline ran on, and keeps a candidate out of every scan group and
+// triage cohort, so none of its output can reach a sibling. The configuration
+// snapshot is checked here so a bad entry fails the form instead of the
+// candidate.
+func (s *Server) validateExperimentEnqueue(repo db.Repository, opts ScanOpts, sk db.Skill) error {
 	if opts.Experiment == "" && opts.CandidateOfScanID == nil {
 		return nil
 	}
 	if opts.Experiment == "" {
 		return fmt.Errorf("%w: a candidate scan needs its experiment name", ErrInvalidExperiment)
+	}
+	if repo.IsLocal() {
+		return fmt.Errorf("%w: a local directory has no commit a candidate can be pinned to", ErrInvalidExperiment)
 	}
 	if sk.OutputKind != findingsOutputKind {
 		return fmt.Errorf("%w: skill %q does not report findings", ErrInvalidExperiment, sk.Name)
@@ -38,24 +46,55 @@ func (s *Server) validateExperimentEnqueue(opts ScanOpts, sk db.Skill) error {
 	if opts.FindingID != nil || opts.DependentID != nil || opts.BaselineScanID != nil || opts.ExplorationMode != "" {
 		return fmt.Errorf("%w: experiments only run on repository-scoped findings scans", ErrInvalidExperiment)
 	}
-	if opts.CandidateOfScanID != nil {
-		if opts.ScanGroup != "" || opts.TriageScanID != nil || opts.FocusArea != "" {
-			return fmt.Errorf("%w: a candidate scan joins no scan group or triage cohort", ErrInvalidExperiment)
-		}
-		return nil
+	exp, err := parseExperimentConfig(opts.ExperimentConfig)
+	if err != nil {
+		return err
 	}
-	return s.checkExperiment(opts.Experiment)
+	if opts.CandidateOfScanID == nil {
+		return s.checkExperimentConfig(exp)
+	}
+	if opts.ScanGroup != "" || opts.TriageScanID != nil || opts.FocusArea != "" {
+		return fmt.Errorf("%w: a candidate scan joins no scan group or triage cohort", ErrInvalidExperiment)
+	}
+	// enqueueSkillWith would replace an unknown model with the skill's default,
+	// which would run a configuration nobody chose under the experiment's name.
+	if !ValidModelPreference(opts.Model) {
+		return fmt.Errorf("%w: candidate model %q is not configured", ErrInvalidExperiment, opts.Model)
+	}
+	return nil
 }
 
-// checkExperiment reports why the named experiment cannot run on this
-// instance: its entry is gone, or its model or skill no longer resolves.
-func (s *Server) checkExperiment(name string) error {
+// launchExperimentConfig snapshots the named scan_experiments entry for an
+// ordinary scan launched with it. The candidate runs this snapshot, so editing
+// or removing the entry later does not change what the operator picked.
+func (s *Server) launchExperimentConfig(name string) (string, error) {
+	if name == "" {
+		return "", nil
+	}
 	exp, ok := s.ScanExperiments[name]
 	if !ok {
-		return fmt.Errorf("%w: %q is not configured", ErrInvalidExperiment, name)
+		return "", fmt.Errorf("%w: %q is not configured", ErrInvalidExperiment, name)
 	}
+	b, err := json.Marshal(exp)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidExperiment, err)
+	}
+	return string(b), nil
+}
+
+func parseExperimentConfig(raw string) (config.ScanExperiment, error) {
+	var exp config.ScanExperiment
+	if err := json.Unmarshal([]byte(raw), &exp); err != nil {
+		return exp, fmt.Errorf("%w: unreadable configuration snapshot: %w", ErrInvalidExperiment, err)
+	}
+	return exp, nil
+}
+
+// checkExperimentConfig reports why an experiment snapshot cannot run on this
+// instance: its model or skill no longer resolves.
+func (s *Server) checkExperimentConfig(exp config.ScanExperiment) error {
 	if exp.Model != "" && !ValidModelPreference(exp.Model) {
-		return fmt.Errorf("%w: %q names model %q, which is not configured", ErrInvalidExperiment, name, exp.Model)
+		return fmt.Errorf("%w: model %q is not configured", ErrInvalidExperiment, exp.Model)
 	}
 	_, err := s.experimentSkill(exp, 0)
 	return err
@@ -85,9 +124,9 @@ func (s *Server) enqueueCandidate(scan *db.Scan) {
 		return
 	}
 	log := s.Log.With("scan", scan.ID, "experiment", scan.Experiment)
-	exp, ok := s.ScanExperiments[scan.Experiment]
-	if !ok {
-		log.Warn("candidate not started: experiment is no longer configured")
+	exp, err := parseExperimentConfig(scan.ExperimentConfig)
+	if err != nil {
+		log.Warn("candidate not started", "err", err)
 		return
 	}
 	var existing int64
@@ -98,8 +137,8 @@ func (s *Server) enqueueCandidate(scan *db.Scan) {
 	if existing > 0 {
 		return
 	}
-	if exp.Model != "" && !ValidModelPreference(exp.Model) {
-		log.Warn("candidate not started: experiment model is not configured", "model", exp.Model)
+	if err := s.checkExperimentConfig(exp); err != nil {
+		log.Warn("candidate not started", "err", err)
 		return
 	}
 	skillID, err := s.experimentSkill(exp, *scan.SkillID)
@@ -120,24 +159,30 @@ func (s *Server) enqueueCandidate(scan *db.Scan) {
 		RescanMode:        scan.RescanMode,
 		DiffBaseScanID:    scan.DiffBaseScanID,
 		Experiment:        scan.Experiment,
+		ExperimentConfig:  scan.ExperimentConfig,
 		CandidateOfScanID: &scan.ID,
 	}); err != nil {
 		log.Error("enqueue candidate", "err", err)
 	}
 }
 
-// retainedExperiment is the experiment a retry carries. A candidate keeps its
-// own, since its row records the configuration that ran. An ordinary scan
-// keeps it only while it can still run, so removing an experiment or the model
-// or skill it names never blocks retrying the scan itself.
-func (s *Server) retainedExperiment(scan db.Scan) string {
+// retainedExperiment is the experiment, and its configuration snapshot, a
+// retry carries. A candidate keeps its own, since its row records the
+// configuration that ran. An ordinary scan keeps it only while the snapshot can
+// still run, so removing the model or skill it names never blocks retrying the
+// scan itself.
+func (s *Server) retainedExperiment(scan db.Scan) (name, snapshot string) {
+	if scan.Experiment == "" {
+		return "", ""
+	}
 	if scan.IsCandidate() {
-		return scan.Experiment
+		return scan.Experiment, scan.ExperimentConfig
 	}
-	if s.checkExperiment(scan.Experiment) != nil {
-		return ""
+	exp, err := parseExperimentConfig(scan.ExperimentConfig)
+	if err != nil || s.checkExperimentConfig(exp) != nil {
+		return "", ""
 	}
-	return scan.Experiment
+	return scan.Experiment, scan.ExperimentConfig
 }
 
 // experimentRow pairs the baseline's and the candidate's observation of one
@@ -150,18 +195,29 @@ type experimentRow struct {
 	FindingStatus db.FindingLifecycle
 }
 
+// experimentSummary holds the comparison counts. Counts derived from operator
+// assessments are only meaningful once Assessed is above zero, and the page
+// shows them as unavailable before that.
 type experimentSummary struct {
-	Shared              int
-	BaselineOnly        int
-	CandidateOnly       int
+	Shared        int
+	BaselineOnly  int
+	CandidateOnly int
+	Observations  int
+	Assessed      int
+	Unassessed    int
+	// AdditionalConfirmed counts confirmed candidate-only observations that
+	// match no repository finding: vulnerabilities neither the baseline nor any
+	// earlier scan reported.
 	AdditionalConfirmed int
 	FalsePositives      int
-	Unassessed          int
-	// EffortMinutes sums the analyst time recorded on the candidate's
-	// assessments. EffortRecorded is false when none was recorded.
-	EffortMinutes  int
-	EffortRecorded bool
-	FailedRuns     int
+	// BaselineFalsePositives counts baseline observations whose repository
+	// finding was rejected.
+	BaselineFalsePositives int
+	// EffortMinutes sums the analyst time recorded on EffortCount of the
+	// candidate's observations.
+	EffortMinutes int
+	EffortCount   int
+	FailedRuns    int
 }
 
 // scanExperiment renders the comparison between an ordinary scan and the
@@ -216,6 +272,13 @@ func (s *Server) scanExperiment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if exp, err := parseExperimentConfig(selected.ExperimentConfig); err == nil {
+		skillName := ""
+		if scan.SkillID != nil {
+			skillName = scan.SkillName
+		}
+		_, data["AdoptPlan"] = adoptionPlan(exp, skillName)
+	}
 	data["Candidate"] = selected
 	data["Rows"] = rows
 	data["Summary"] = summary
@@ -268,7 +331,7 @@ func (s *Server) compareExperiment(baseline, candidate db.Scan) ([]experimentRow
 		c := &cand[i]
 		row := experimentRow{Candidate: c, Baseline: baseByFP[c.Fingerprint]}
 		row.FindingID, row.FindingStatus = findings[c.Fingerprint].ID, findings[c.Fingerprint].Status
-		summary.tally(c, row.Baseline == nil)
+		summary.tally(c, row.Baseline == nil && row.FindingID == 0)
 		if row.Baseline == nil {
 			candidateOnly = append(candidateOnly, row)
 			continue
@@ -279,29 +342,37 @@ func (s *Server) compareExperiment(baseline, candidate db.Scan) ([]experimentRow
 	var baselineOnly []experimentRow
 	for i := range base {
 		b := &base[i]
+		if findings[b.Fingerprint].Status == db.FindingRejected {
+			summary.BaselineFalsePositives++
+		}
 		if matched[b.Fingerprint] {
 			continue
 		}
 		baselineOnly = append(baselineOnly, experimentRow{Baseline: b, FindingID: b.FindingID, FindingStatus: findings[b.Fingerprint].Status})
 	}
 	summary.Shared, summary.BaselineOnly, summary.CandidateOnly = len(shared), len(baselineOnly), len(candidateOnly)
+	summary.Observations = len(cand)
 	return slices.Concat(candidateOnly, baselineOnly, shared), summary, nil
 }
 
-func (sum *experimentSummary) tally(c *db.CandidateObservation, candidateOnly bool) {
+func (sum *experimentSummary) tally(c *db.CandidateObservation, unknownToRepository bool) {
 	switch c.Assessment {
+	case "":
+		sum.Unassessed++
 	case db.CandidateConfirmed:
-		if candidateOnly {
+		sum.Assessed++
+		if unknownToRepository {
 			sum.AdditionalConfirmed++
 		}
 	case db.CandidateFalsePositive:
+		sum.Assessed++
 		sum.FalsePositives++
-	case "":
-		sum.Unassessed++
+	default:
+		sum.Assessed++
 	}
 	if c.EffortMinutes != nil {
 		sum.EffortMinutes += *c.EffortMinutes
-		sum.EffortRecorded = true
+		sum.EffortCount++
 	}
 }
 
@@ -382,8 +453,11 @@ func parseEffortMinutes(raw string) (*int, error) {
 }
 
 // scanExperimentDecision records whether the operator adopts or rejects the
-// configuration a candidate scan ran with. Nothing is applied: ordinary scans
-// keep their configuration until the operator changes it.
+// configuration a candidate scan ran with. Adopting is the explicit step that
+// applies it to ordinary scans, as far as a per-skill setting can carry it: an
+// experiment that only changed the model sets that model on the ordinary
+// scan's skill. A changed effort is a global setting and a changed skill is a
+// different skill, so both stay manual and the decision says so.
 func (s *Server) scanExperimentDecision(w http.ResponseWriter, r *http.Request) {
 	scan, ok := loadByID[db.Scan](s, w, r)
 	if !ok {
@@ -398,15 +472,78 @@ func (s *Server) scanExperimentDecision(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, fmt.Sprintf("unknown decision %q", decision), http.StatusUnprocessableEntity)
 		return
 	}
-	if err := s.DB.Create(&db.ExperimentDecision{
+	exp, err := parseExperimentConfig(scan.ExperimentConfig)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	row := db.ExperimentDecision{
 		RepositoryID:    scan.RepositoryID,
 		CandidateScanID: scan.ID,
 		Experiment:      scan.Experiment,
 		Decision:        decision,
 		Note:            strings.TrimSpace(r.FormValue("note")),
-	}).Error; err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+	if err := s.DB.Transaction(func(tx *gorm.DB) error {
+		if decision == db.ExperimentAdopt {
+			applied, err := adoptExperiment(tx, scan, exp)
+			if err != nil {
+				return err
+			}
+			row.Applied = applied
+		}
+		return tx.Create(&row).Error
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
 	s.redirect(w, r, fmt.Sprintf("/scans/%d/experiment", scan.ID))
+}
+
+// adoptionPlan says what adopting exp applies to the ordinary scan's skill and
+// what it leaves to the operator. Only a changed model maps to a per-skill
+// setting, and only when the candidate ran the same skill.
+func adoptionPlan(exp config.ScanExperiment, skillName string) (applyModel bool, summary string) {
+	var manual []string
+	if exp.Effort != "" {
+		manual = append(manual, fmt.Sprintf("effort %s is a global setting", exp.Effort))
+	}
+	if exp.Skill != "" {
+		manual = append(manual, fmt.Sprintf("skill %s replaces the ordinary skill", exp.Skill))
+	}
+	applyModel = exp.Model != "" && exp.Skill == "" && skillName != ""
+	var parts []string
+	if applyModel {
+		parts = append(parts, fmt.Sprintf("sets %s model to %s", skillName, exp.Model))
+	}
+	if len(manual) > 0 {
+		parts = append(parts, "leaves to you: "+strings.Join(manual, ", "))
+	}
+	if len(parts) == 0 {
+		return false, "applies nothing"
+	}
+	return applyModel, strings.Join(parts, ". ")
+}
+
+// adoptExperiment applies the adoption plan and returns its description.
+func adoptExperiment(tx *gorm.DB, candidate db.Scan, exp config.ScanExperiment) (string, error) {
+	var baseline db.Scan
+	if err := tx.Select("id", "skill_id", "skill_name").First(&baseline, *candidate.CandidateOfScanID).Error; err != nil {
+		return "", fmt.Errorf("load baseline scan: %w", err)
+	}
+	skillName := ""
+	if baseline.SkillID != nil {
+		skillName = baseline.SkillName
+	}
+	applyModel, summary := adoptionPlan(exp, skillName)
+	if !applyModel {
+		return summary, nil
+	}
+	if !ValidModelPreference(exp.Model) {
+		return "", fmt.Errorf("%w: model %q is not configured", ErrInvalidExperiment, exp.Model)
+	}
+	if err := tx.Model(&db.Skill{}).Where("id = ?", *baseline.SkillID).Update("model", exp.Model).Error; err != nil {
+		return "", err
+	}
+	return summary, nil
 }

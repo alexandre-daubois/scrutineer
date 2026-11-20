@@ -52,8 +52,8 @@ type CandidateObservation struct {
 }
 
 // ExperimentDecision is an operator's recorded decision on the configuration a
-// candidate scan ran with. Recording one changes no setting: ordinary scans
-// keep their model, effort and skill until the operator changes them.
+// candidate scan ran with. Adopting is the only path that applies a candidate
+// configuration to ordinary scans.
 type ExperimentDecision struct {
 	ID              uint `gorm:"primarykey"`
 	RepositoryID    uint `gorm:"index;not null"`
@@ -61,7 +61,10 @@ type ExperimentDecision struct {
 	Experiment      string
 	Decision        string
 	Note            string `gorm:"type:text"`
-	CreatedAt       time.Time
+	// Applied describes what an adopt changed and what it left to the
+	// operator. Empty on a reject.
+	Applied   string `gorm:"type:text"`
+	CreatedAt time.Time
 }
 
 // IsCandidate reports whether the scan is a candidate run, whose output is

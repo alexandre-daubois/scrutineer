@@ -225,11 +225,18 @@ func (s *Server) skillRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
+	experiment := strings.TrimSpace(r.FormValue("experiment"))
+	experimentConfig, err := s.launchExperimentConfig(experiment)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
 	scanID, err := s.enqueueSkillWith(r.Context(), uint(repoID), uint(skillID), ScanOpts{
-		Model:        r.FormValue("model"),
-		EgressPolicy: strings.TrimSpace(r.FormValue("egress_policy")),
-		MaxCostUSD:   maxCost,
-		Experiment:   strings.TrimSpace(r.FormValue("experiment")),
+		Model:            r.FormValue("model"),
+		EgressPolicy:     strings.TrimSpace(r.FormValue("egress_policy")),
+		MaxCostUSD:       maxCost,
+		Experiment:       experiment,
+		ExperimentConfig: experimentConfig,
 	})
 	if errors.Is(err, ErrUnknownEgressPolicy) || errors.Is(err, ErrInvalidMaxCost) || errors.Is(err, ErrInvalidExperiment) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)

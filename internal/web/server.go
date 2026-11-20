@@ -1021,7 +1021,7 @@ func (s *Server) repoList(w http.ResponseWriter, r *http.Request) {
 		// Order by each repo's latest scan id (the row the Last scan column
 		// renders), most-recent first by default; never-scanned repos (NULL)
 		// sort last under DESC. Correlated subquery, like the findings case.
-		q = q.Order(orderByExpr("(SELECT MAX(id) FROM scans WHERE scans.repository_id = repositories.id)", dir, true)).Order("updated_at desc")
+		q = q.Order(orderByExpr("(SELECT MAX(id) FROM scans WHERE scans.repository_id = repositories.id AND scans.candidate_of_scan_id IS NULL)", dir, true)).Order("updated_at desc")
 	case statusKey:
 		// Order by the same rank the scans index uses: the denormalised
 		// status_priority column (0=running .. 3=terminal), lowest-first by
@@ -3704,6 +3704,9 @@ type ScanOpts struct {
 	// Experiment names a scan_experiments entry. Like EgressPolicy it is
 	// operator-only: the repository page form and the retry paths fill it.
 	Experiment string
+	// ExperimentConfig is the JSON snapshot of the Experiment entry, taken at
+	// launch and carried unchanged onto the candidate and retries.
+	ExperimentConfig string
 	// CandidateOfScanID marks the enqueue as the candidate run of that
 	// ordinary scan. Only enqueueCandidate and the retry paths set it.
 	CandidateOfScanID *uint
@@ -3846,6 +3849,7 @@ func (s *Server) enqueueSkillWith(ctx context.Context, repoID, skillID uint, opt
 		VerificationFeedback: opts.VerificationFeedback,
 		ImportPayload:        opts.ImportPayload,
 		Experiment:           opts.Experiment,
+		ExperimentConfig:     opts.ExperimentConfig,
 		CandidateOfScanID:    opts.CandidateOfScanID,
 		SkillsRepoSHA:        s.SkillsRepoSHA,
 		APIToken:             NewAPIToken(),
@@ -3916,7 +3920,7 @@ func (s *Server) skillEnqueuePreflight(repo db.Repository, skillID uint, opts Sc
 	if hasSkill && sk.RequiresProfile != "" && opts.Profile != "" && opts.Profile != sk.RequiresProfile {
 		return db.Skill{}, false, fmt.Errorf("%w: %q needs %q, got %q", ErrSkillProfileMismatch, sk.Name, sk.RequiresProfile, opts.Profile)
 	}
-	if err := s.validateExperimentEnqueue(opts, sk); err != nil {
+	if err := s.validateExperimentEnqueue(repo, opts, sk); err != nil {
 		return db.Skill{}, false, err
 	}
 	return sk, hasSkill, nil

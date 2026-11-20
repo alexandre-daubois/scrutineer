@@ -704,6 +704,8 @@ func TestLoad_rejectsInvalidScanExperiments(t *testing.T) {
 		{"empty entry", "scan_experiments:\n  trial: {}\n", "at least one"},
 		{"bad name", "scan_experiments:\n  Trial One:\n    effort: low\n", "experiment name"},
 		{"unknown effort", "scan_experiments:\n  trial:\n    effort: extreme\n", "effort"},
+		{"backend key", "scan_experiments:\n  trial:\n    model: m\n    backend: codex\n", "unknown key \"backend\""},
+		{"egress key", "scan_experiments:\n  trial:\n    egress_policy: open\n", "unknown key \"egress_policy\""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := Load(write(t, tc.yaml))

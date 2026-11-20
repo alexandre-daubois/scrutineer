@@ -388,6 +388,7 @@ func (s *Server) scanRetry(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID, resumeOf := s.resumeOpts(scan)
+	experiment, experimentConfig := s.retainedExperiment(scan)
 	newID, err := s.enqueueSkillWith(r.Context(), scan.RepositoryID, *scan.SkillID, ScanOpts{
 		AuditRetry:           true,
 		Model:                scan.Model,
@@ -412,7 +413,8 @@ func (s *Server) scanRetry(w http.ResponseWriter, r *http.Request) {
 		ResumedFromScanID:    resumeOf,
 		ParentScanID:         &scan.ID,
 		VerificationFeedback: scan.VerificationFeedback,
-		Experiment:           s.retainedExperiment(scan),
+		Experiment:           experiment,
+		ExperimentConfig:     experimentConfig,
 		CandidateOfScanID:    scan.CandidateOfScanID,
 		// An ingest scan's input is the uploaded payload, not ./src;
 		// without it the retry stages no import/report and the model
@@ -500,7 +502,7 @@ func (s *Server) scansRetryFailed(w http.ResponseWriter, r *http.Request) {
 	// deliberately absent: a user-cancelled newer run must not block retrying an
 	// older genuine failure.
 	var scans []db.Scan
-	err = q.Select("id, repository_id, skill_id, model, effort, finding_id, remediation_attempt_id, sub_path, scope_mode, ref, profile, egress_policy, max_cost_usd, rescan_mode, diff_base_scan_id, scan_group, focus_area, triage_scan_id, fallback_from_scan_id, exploration_mode, exploration_path, backend, status, session_id, resumed_from_scan_id, import_payload, verification_feedback, experiment, candidate_of_scan_id").
+	err = q.Select("id, repository_id, skill_id, model, effort, finding_id, remediation_attempt_id, sub_path, scope_mode, ref, profile, egress_policy, max_cost_usd, rescan_mode, diff_base_scan_id, scan_group, focus_area, triage_scan_id, fallback_from_scan_id, exploration_mode, exploration_path, backend, status, session_id, resumed_from_scan_id, import_payload, verification_feedback, experiment, experiment_config, candidate_of_scan_id").
 		Where(`NOT EXISTS (
 			SELECT 1 FROM scans n
 			WHERE n.id > scans.id
@@ -526,6 +528,7 @@ func (s *Server) scansRetryFailed(w http.ResponseWriter, r *http.Request) {
 	var retried, errored int
 	for _, sc := range scans {
 		sessionID, resumeOf := s.resumeOpts(sc)
+		experiment, experimentConfig := s.retainedExperiment(sc)
 		parent := sc.ID
 		if _, err := s.enqueueSkillWith(r.Context(), sc.RepositoryID, *sc.SkillID, ScanOpts{
 			AuditRetry:           true,
@@ -551,7 +554,8 @@ func (s *Server) scansRetryFailed(w http.ResponseWriter, r *http.Request) {
 			ResumedFromScanID:    resumeOf,
 			ParentScanID:         &parent,
 			VerificationFeedback: sc.VerificationFeedback,
-			Experiment:           s.retainedExperiment(sc),
+			Experiment:           experiment,
+			ExperimentConfig:     experimentConfig,
 			CandidateOfScanID:    sc.CandidateOfScanID,
 			ImportPayload:        sc.ImportPayload,
 		}); err != nil {

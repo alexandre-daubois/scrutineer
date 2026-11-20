@@ -116,7 +116,7 @@ func (s *Server) loadUsageManifestCounts() map[uint]int {
 func (s *Server) loadUsageDeepDiveSinks() map[uint]int {
 	latest := s.DB.Model(&db.Scan{}).
 		Select("MAX(id)").
-		Where("status = ? AND skill_name = ? AND cost_usd > 0 AND report != ''", db.ScanDone, "security-deep-dive").
+		Where("status = ? AND skill_name = ? AND cost_usd > 0 AND report != '' AND candidate_of_scan_id IS NULL", db.ScanDone, "security-deep-dive").
 		Group("repository_id")
 	var sources []db.Scan
 	s.DB.Select("id", "report").Where("id IN (?)", latest).Find(&sources)

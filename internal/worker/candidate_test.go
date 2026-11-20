@@ -181,7 +181,6 @@ func TestCandidate_inputsMustMatchTheBaseline(t *testing.T) {
 	}{
 		{"same inputs", "abc", "tm", "cfg", ""},
 		{"other commit", "def", "tm", "cfg", "source commit"},
-		{"edited threat model", "abc", "tm2", "cfg", "threat model changed"},
 		{"edited scan config", "abc", "tm", "", "scan config changed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -277,5 +276,31 @@ func TestCandidate_contextCarriesTheBaselineRef(t *testing.T) {
 	work = t.TempDir()
 	if _, err := w.stageWorkspace(t.Context(), work, filepath.Join(work, ".claude", "skills", skill.Name), &orphan, &skill); err == nil {
 		t.Error("a candidate without its baseline staged a workspace")
+	}
+}
+
+func TestCandidate_stagedThreatModelMustMatchTheBaseline(t *testing.T) {
+	w, repo := observationWorker(t)
+	baseline, candidate := candidatePair(t, w, repo)
+	if err := w.pinStagedThreatModel(baseline, "model as staged"); err != nil {
+		t.Fatal(err)
+	}
+	var stored db.Scan
+	w.DB.First(&stored, baseline.ID)
+	if stored.StagedThreatModelSHA256 == "" || stored.StagedThreatModelSHA256 != baseline.StagedThreatModelSHA256 {
+		t.Fatalf("baseline digest = %q, want it recorded", stored.StagedThreatModelSHA256)
+	}
+	if err := w.pinStagedThreatModel(candidate, "model as staged"); err != nil {
+		t.Errorf("same staged model: err = %v, want nil", err)
+	}
+	err := w.pinStagedThreatModel(candidate, "model with one promotion retired")
+	if err == nil || !strings.Contains(err.Error(), "differs from the one baseline scan") {
+		t.Errorf("different staged model: err = %v, want a refusal", err)
+	}
+
+	plain := &db.Scan{RepositoryID: repo.ID, Kind: JobSkill, Status: db.ScanRunning}
+	w.DB.Create(plain)
+	if err := w.pinStagedThreatModel(plain, "anything"); err != nil || plain.StagedThreatModelSHA256 != "" {
+		t.Errorf("a scan outside any experiment: err %v digest %q, want neither", err, plain.StagedThreatModelSHA256)
 	}
 }

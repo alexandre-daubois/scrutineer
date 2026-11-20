@@ -10,15 +10,16 @@ import (
 // candidateBaseline loads the ordinary scan a candidate is compared against.
 func (w *Worker) candidateBaseline(scan *db.Scan) (db.Scan, error) {
 	var baseline db.Scan
-	if err := w.DB.Select("id", "skill_name", "ref", "commit", "recipe").First(&baseline, *scan.CandidateOfScanID).Error; err != nil {
+	if err := w.DB.Select("id", "skill_name", "ref", "commit", "recipe", "staged_threat_model_sha256").First(&baseline, *scan.CandidateOfScanID).Error; err != nil {
 		return db.Scan{}, fmt.Errorf("load baseline scan %d: %w", *scan.CandidateOfScanID, err)
 	}
 	return baseline, nil
 }
 
-// checkCandidateInputs fails a candidate whose source commit, threat model or
-// scan config differs from what its baseline ran against, so the comparison
-// never reads a change of inputs as a change of configuration.
+// checkCandidateInputs fails a candidate whose source commit or scan config
+// differs from what its baseline ran against, so the comparison never reads a
+// change of inputs as a change of configuration. The threat model is checked
+// once staged, by pinStagedThreatModel.
 func (w *Worker) checkCandidateInputs(scan *db.Scan) error {
 	baseline, err := w.candidateBaseline(scan)
 	if err != nil {
@@ -33,9 +34,6 @@ func (w *Worker) checkCandidateInputs(scan *db.Scan) error {
 	}
 	if err := json.Unmarshal([]byte(scan.Recipe), &got); err != nil {
 		return fmt.Errorf("candidate scan #%d has no readable recipe: %w", scan.ID, err)
-	}
-	if got.ThreatModelSHA256 != want.ThreatModelSHA256 {
-		return fmt.Errorf("repository threat model changed since baseline scan #%d ran", baseline.ID)
 	}
 	if got.ScanConfigSHA256 != want.ScanConfigSHA256 {
 		return fmt.Errorf("repository scan config changed since baseline scan #%d ran", baseline.ID)
@@ -80,5 +78,31 @@ func (w *Worker) parseCandidateOutput(skill *db.Skill, scan *db.Scan, report str
 		return fmt.Errorf("record candidate observations: %w", err)
 	}
 	emit(Event{Kind: KindText, Text: fmt.Sprintf("recorded %d candidate observation(s), repository findings unchanged", len(obs))})
+	return nil
+}
+
+// pinStagedThreatModel records the digest of the threat model staged for a scan
+// tied to an experiment and fails a candidate whose digest differs from its
+// baseline's. The digest is taken after promotion filtering, which follows live
+// review state, so it catches a change the raw repository text does not show.
+func (w *Worker) pinStagedThreatModel(scan *db.Scan, model string) error {
+	if scan.Experiment == "" {
+		return nil
+	}
+	digest := textDigest(model)
+	scan.StagedThreatModelSHA256 = digest
+	if err := w.DB.Model(&db.Scan{}).Where("id = ?", scan.ID).Update("staged_threat_model_sha256", digest).Error; err != nil {
+		return fmt.Errorf("record staged threat model digest: %w", err)
+	}
+	if !scan.IsCandidate() {
+		return nil
+	}
+	baseline, err := w.candidateBaseline(scan)
+	if err != nil {
+		return err
+	}
+	if baseline.StagedThreatModelSHA256 != digest {
+		return fmt.Errorf("the threat model staged for this candidate differs from the one baseline scan #%d ran with", baseline.ID)
+	}
 	return nil
 }

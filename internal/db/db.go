@@ -425,6 +425,14 @@ type Scan struct {
 	// it is compared against. A candidate's findings land in
 	// candidate_observations only, and no follow-up hook fires for it.
 	CandidateOfScanID *uint `gorm:"index"`
+	// ExperimentConfig is the JSON snapshot of the scan_experiments entry taken
+	// when the ordinary scan was launched, copied onto its candidate. The
+	// candidate runs the snapshot, not the entry as it stands later.
+	ExperimentConfig string `gorm:"type:text"`
+	// StagedThreatModelSHA256 digests the threat model staged for a scan tied
+	// to an experiment, after promotion filtering. A candidate fails when its
+	// digest differs from its baseline's.
+	StagedThreatModelSHA256 string
 
 	// Recipe is an immutable JSON snapshot (worker.ScanRecipe) of the
 	// inputs the worker was handed, written once inside the transaction

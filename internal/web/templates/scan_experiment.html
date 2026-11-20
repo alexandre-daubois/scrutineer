@@ -10,7 +10,7 @@
   <h2 class="text-2xl font-semibold flex items-center gap-2">
     <i data-lucide="flask-conical"></i> Experiment {{$base.Experiment}}
   </h2>
-  <p class="text-sm text-muted-foreground mt-1">Candidate runs of this configuration against <a class="hover:underline" href="/scans/{{$base.ID}}">scan #{{$base.ID}}</a> on the same commit. Candidate findings stay out of the repository's findings, and recording a decision here changes no setting.</p>
+  <p class="text-sm text-muted-foreground mt-1">Candidate runs of this configuration against <a class="hover:underline" href="/scans/{{$base.ID}}">scan #{{$base.ID}}</a> on the same commit. Candidate findings stay out of the repository's findings. Only an adopt decision changes a setting.</p>
 </div>
 
 <h3 class="text-lg font-semibold mb-2">Runs</h3>
@@ -33,10 +33,12 @@
   <div><dt class="text-muted-foreground font-semibold">Reported by both</dt><dd>{{$.Summary.Shared}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Baseline only</dt><dd>{{$.Summary.BaselineOnly}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Candidate only</dt><dd>{{$.Summary.CandidateOnly}}</dd></div>
-  <div><dt class="text-muted-foreground font-semibold">Additional confirmed</dt><dd>{{$.Summary.AdditionalConfirmed}}</dd></div>
-  <div><dt class="text-muted-foreground font-semibold">Candidate false positives</dt><dd>{{$.Summary.FalsePositives}}</dd></div>
-  <div><dt class="text-muted-foreground font-semibold">Not yet assessed</dt><dd>{{$.Summary.Unassessed}}</dd></div>
-  <div><dt class="text-muted-foreground font-semibold">Analyst effort</dt><dd>{{if $.Summary.EffortRecorded}}{{$.Summary.EffortMinutes}} min{{else}}unavailable{{end}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Additional confirmed</dt><dd>{{if $.Summary.Assessed}}{{$.Summary.AdditionalConfirmed}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Candidate false positives</dt><dd>{{if $.Summary.Assessed}}{{$.Summary.FalsePositives}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Baseline false positives</dt><dd>{{$.Summary.BaselineFalsePositives}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Assessed</dt><dd>{{$.Summary.Assessed}} of {{$.Summary.Observations}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Candidate analyst effort</dt><dd>{{if $.Summary.EffortCount}}{{$.Summary.EffortMinutes}} min on {{$.Summary.EffortCount}} of {{$.Summary.Observations}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Baseline analyst effort</dt><dd><span class="text-muted-foreground" data-tooltip="Scrutineer records no analyst time on repository findings">unavailable</span></dd></div>
   <div><dt class="text-muted-foreground font-semibold">Failed candidate runs</dt><dd>{{$.Summary.FailedRuns}}</dd></div>
 </dl>
 
@@ -79,8 +81,10 @@
 {{end}}
 
 <h3 class="text-lg font-semibold mb-2">Decision</h3>
-<p class="text-sm text-muted-foreground mb-2">Recording a decision keeps a trace of it. To apply an adopted configuration to ordinary scans, change the skill's model, the effort setting or the skill itself.</p>
-<form method="post" action="/scans/{{$cand.ID}}/experiment-decision" class="flex flex-wrap items-center gap-2 mb-4">
+<p class="text-sm text-muted-foreground mb-2">Rejecting only records the decision. Adopting {{$.AdoptPlan}}.</p>
+<form method="post" action="/scans/{{$cand.ID}}/experiment-decision" class="flex flex-wrap items-center gap-2 mb-4"
+      hx-post="/scans/{{$cand.ID}}/experiment-decision" hx-swap="none"
+      hx-confirm="Record this decision? Adopting {{$.AdoptPlan}}.">
   <select class="select text-xs" name="decision" aria-label="Decision">
     <option value="adopt">adopt</option>
     <option value="reject">reject</option>
@@ -90,11 +94,11 @@
 </form>
 {{if $.Decisions}}
 <ul class="text-sm space-y-1 mb-6">
-  {{range $.Decisions}}<li><span class="font-medium">{{.Decision}}</span> <span class="text-muted-foreground">{{since .CreatedAt}}</span>{{with .Note}}: {{.}}{{end}}</li>{{end}}
+  {{range $.Decisions}}<li><span class="font-medium">{{.Decision}}</span> <span class="text-muted-foreground">{{since .CreatedAt}}</span>{{with .Note}}: {{.}}{{end}}{{with .Applied}} <span class="text-muted-foreground">({{.}})</span>{{end}}</li>{{end}}
 </ul>
 {{end}}
 {{else}}
-<p class="text-sm text-muted-foreground">{{if $base.Status.Terminal}}No candidate run exists for scan #{{$base.ID}}. One starts only once the scan records its findings and while the experiment's entry, model and skill still resolve. A refused start is logged on the server.{{else}}No candidate has run yet. One starts once scan #{{$base.ID}} records its findings.{{end}}</p>
+<p class="text-sm text-muted-foreground">{{if $base.Status.Terminal}}No candidate run exists for scan #{{$base.ID}}. One starts only once the scan records its findings and while the model and skill of the experiment as launched still resolve. A refused start is logged on the server.{{else}}No candidate has run yet. One starts once scan #{{$base.ID}} records its findings.{{end}}</p>
 {{end}}
 
 {{define "experiment-run"}}
@@ -107,7 +111,7 @@
   <td class="whitespace-normal">{{.Model}}</td>
   <td>{{if .Effort}}{{.Effort}}{{else}}<span class="text-muted-foreground">default</span>{{end}}</td>
   <td>{{if .Commit}}<code class="text-xs">{{short .Commit}}</code>{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</td>
-  <td class="text-right">{{.FindingsCount}}</td>
+  <td class="text-right">{{if or .FindingsCount (eq (status .Status) "done")}}{{.FindingsCount}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</td>
   <td class="text-right">{{if .Duration}}{{dur .Duration}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</td>
   <td class="text-right">{{if or .TotalInputTokens .OutputTokens}}{{bignum .TotalInputTokens}} in / {{bignum .OutputTokens}} out{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</td>
   <td class="text-right">{{if gt .CostUSD 0.0}}{{usd .CostUSD}}{{else}}<span class="text-muted-foreground"{{if .CostUnpriced}} data-tooltip="Tokens were recorded but no price is known for this model"{{end}}>unavailable</span>{{end}}</td>

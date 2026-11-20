@@ -344,7 +344,9 @@ func (w *Worker) runSkillWithFallback(ctx context.Context, scan *db.Scan, skill 
 	if context.Cause(ctx) == errCostCapped {
 		return res, err
 	}
-	if !hardScope || scan.ScopeMode == "soft" || !dependencyResolutionFailed(depResolveFail.Load(), res, err) {
+	// A candidate keeps its baseline's scope, so it fails here rather than
+	// widening to the whole repository on its own.
+	if !hardScope || scan.ScopeMode == "soft" || scan.IsCandidate() || !dependencyResolutionFailed(depResolveFail.Load(), res, err) {
 		return res, err
 	}
 	emit(Event{Kind: KindText, Text: "hard-scope dependency resolution failed; widening to the whole repository (soft) and retrying"})
@@ -1619,6 +1621,9 @@ func (w *Worker) stageWorkspace(ctx context.Context, workRoot, skillDir string, 
 	model, err := w.activeThreatModel(scan.RepositoryID, scan.Repository.ThreatModel, skill.Name)
 	if err != nil {
 		return skillContext{}, fmt.Errorf("filter promoted feedback: %w", err)
+	}
+	if err := w.pinStagedThreatModel(scan, model); err != nil {
+		return skillContext{}, err
 	}
 	staged := *scan
 	staged.Repository.ThreatModel = model

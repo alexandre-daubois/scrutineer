@@ -73,8 +73,9 @@ type ScanRecipe struct {
 	// Experiment and CandidateOfScanID identify a candidate run and the
 	// ordinary scan it is compared against. On an ordinary scan Experiment
 	// names the candidate configuration it asked to trial.
-	Experiment        string `json:"experiment,omitempty"`
-	CandidateOfScanID *uint  `json:"candidate_of_scan_id,omitempty"`
+	Experiment        string          `json:"experiment,omitempty"`
+	ExperimentConfig  json.RawMessage `json:"experiment_config,omitempty"`
+	CandidateOfScanID *uint           `json:"candidate_of_scan_id,omitempty"`
 
 	// ThreatModelSHA256 and ScanConfigSHA256 digest the Repository text in
 	// effect at claim time, so a rerun after an edit is distinguishable
@@ -129,6 +130,9 @@ func buildScanRecipe(scan *db.Scan, backend, threatModel, scanConfig string) (st
 	}
 	if scan.FocusArea != "" && json.Valid([]byte(scan.FocusArea)) {
 		r.FocusArea = json.RawMessage(scan.FocusArea)
+	}
+	if scan.ExperimentConfig != "" && json.Valid([]byte(scan.ExperimentConfig)) {
+		r.ExperimentConfig = json.RawMessage(scan.ExperimentConfig)
 	}
 	if scan.SkillName == "reflect" {
 		r.ReflectionInputSHA256 = textDigest(string(scan.ImportPayload))
