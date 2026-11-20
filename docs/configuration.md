@@ -29,7 +29,7 @@ Skills resolve to a model through a tier: `high` by default, unless the skill's 
         effort: medium
         skill: security-deep-dive-v2
 
-Each entry needs at least one of `model`, `effort` and `skill`. An empty field keeps the ordinary scan's value. `model` must be a configured model id or tier and `skill` an active skill with the `findings` output kind. Both are checked when a scan is launched. Names follow the `scan_egress_policies` rule: 1 to 64 lowercase letters, digits, `.`, `_` and `-`. Only this file defines experiments, so nothing the scanned repository, a skill or a model says can pick a candidate's model, effort, skill, credentials or egress. See [scanning.md](scanning.md#trialling-a-candidate-configuration).
+Each entry needs at least one of `model`, `effort` and `skill`, and any other key (`backend`, `egress_policy`, ...) is refused at startup rather than silently ignored. An empty field keeps the ordinary scan's value. The entry is snapshotted when a scan is launched with it, so editing it later only affects later launches. `model` must be a configured model id or tier and `skill` an active skill with the `findings` output kind. Both are checked when a scan is launched. Names follow the `scan_egress_policies` rule: 1 to 64 lowercase letters, digits, `.`, `_` and `-`. Only this file defines experiments, so nothing the scanned repository, a skill or a model says can pick a candidate's model, effort, skill, credentials or egress. See [scanning.md](scanning.md#trialling-a-candidate-configuration).
 
 ## Flags
 

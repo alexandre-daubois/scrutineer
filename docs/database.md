@@ -185,8 +185,10 @@ One row per skill execution or external import. `skill_name` / `skill_version` p
 | exploration_path | text | Repository-relative source directory selected for an exploratory audit, or `.` for root-level random source. Persisted before the agent starts and preserved on retries. |
 | profile | text | Runner profile that ran the scan (e.g. `php`). Empty = the default runner image. Set explicitly via `?profile=` or auto-detected from the clone by `brief` before launch; persisted so retries reuse the choice. |
 | egress_policy | text | Name of the `scan_egress_policies` entry the operator picked for this scan in the Run skill menu. Empty when the scan has none. Set only from the operator UI and carried on retry; the skill API and automatic follow-up scans never set it. A candidate scan inherits its baseline's policy so both run with the same egress. |
-| experiment | text | Name of the `scan_experiments` entry tied to the scan. On an ordinary scan it is the candidate configuration the operator asked to trial from the Run skill menu. On a candidate scan it is the configuration that ran. Empty otherwise. A retried ordinary scan keeps it only while the entry is still configured. A retried candidate always keeps it. |
-| candidate_of_scan_id | integer | Nullable. Set on a candidate scan to the ordinary scan it is compared against. A candidate is enqueued once that scan finalizes, pinned to its `commit`, sub-path, scope, profile, egress policy, cost cap and rescan mode. Its findings go to `candidate_observations`, never to `findings` or `finding_observations`, its scan token may only read, stream into its own observations and validate its own report, and no follow-up hook fires for it. It fails when its commit, threat model or scan config differ from the baseline's recipe. Candidate scans never count as a repository's latest scan, a prerequisite or a diff baseline, and the skill API hides them from other scans. Retries keep it. |
+| experiment | text | Name of the `scan_experiments` entry tied to the scan. On an ordinary scan it is the candidate configuration the operator asked to trial from the Run skill menu. On a candidate scan it is the configuration that ran. Empty otherwise. A retried ordinary scan keeps it only while its snapshot's model and skill still resolve. A retried candidate always keeps it. |
+| experiment_config | text | JSON snapshot (`model`, `effort`, `skill`) of the `scan_experiments` entry taken when the ordinary scan was launched, copied onto its candidate and carried by retries. The candidate runs the snapshot, so a later edit or removal of the entry does not change it. Empty when `experiment` is. |
+| staged_threat_model_sha256 | text | SHA-256 of the threat model staged for a scan tied to an experiment, after analyst feedback promotions are filtered against live review state. A candidate fails when its digest differs from its baseline's. Empty on scans outside an experiment. |
+| candidate_of_scan_id | integer | Nullable. Set on a candidate scan to the ordinary scan it is compared against. A candidate is enqueued once that scan finalizes, pinned to its `commit`, sub-path, scope, profile, egress policy, cost cap and rescan mode, and never widens a hard scope on its own. Its findings go to `candidate_observations`, never to `findings` or `finding_observations`, its scan token may only read, stream into its own observations and validate its own report, and no follow-up hook fires for it. It fails when its commit or scan config differ from the baseline's recipe or its `staged_threat_model_sha256` from the baseline's. Candidate scans never count as a repository's latest scan, a prerequisite or a diff baseline, and the skill API hides them from other scans. Retries keep it. |
 | backend | text | Agent CLI (`-backend`) that ran the scan: `claude`, `codex`, `opencode`, or `copilot`. Stamped by the worker so a retry after switching `-backend` starts fresh instead of passing one harness's session id to another's resume command. Empty on rows predating the column or that never reached the runner. |
 | provider | text | Provider prefix selected from an OpenCode model id, such as `groq` or `kiro`. Empty for other backends. |
 | runner_image | text | Provider base image selected for the scan, before the language profile is layered on it. |
@@ -552,7 +554,7 @@ One row per finding a candidate scan reported. These rows never become findings:
 
 ## experiment_decisions
 
-Append-only operator decisions on the configuration a candidate scan ran with. A decision changes no setting: ordinary scans keep their model, effort and skill until the operator changes them. Repository deletion removes them.
+Append-only operator decisions on the configuration a candidate scan ran with. Adopting is the only path from a candidate configuration to ordinary scans: when the experiment changed only the model, it sets that model on the ordinary scan's skill (`skills.model`) in the same transaction as the row. A changed effort or skill is left to the operator. Rejecting changes nothing. Repository deletion removes them.
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -562,6 +564,7 @@ Append-only operator decisions on the configuration a candidate scan ran with. A
 | experiment | text | The candidate's `scans.experiment` at the time. |
 | decision | text | `adopt` or `reject`. |
 | note | text | |
+| applied | text | What an adopt changed and what it left to the operator, e.g. `sets security-deep-dive model to claude-sonnet-5`. Empty on a reject. |
 | created_at | datetime | |
 
 ## remediation_attempts

@@ -11,7 +11,7 @@ A local tool for scanning open source repositories for security vulnerabilities 
 - Imports from software bills of materials and external finding reports; exports in standard advisory and scanner formats, markdown and encrypted bundles.
 - Per-scan containers, language-specific runner profiles and configurable egress policies.
 - Token and cost tracking, batch controls and organisation reports.
-- Candidate trials of another model, effort or skill on the same commit as an ordinary scan, compared side by side without touching the repository's findings.
+- Candidate trials of another model, effort or skill on the same commit as an ordinary scan, compared side by side without touching the repository's findings and adopted only through an explicit operator decision.
 
 ## Quick start
 
