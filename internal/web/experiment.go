@@ -219,6 +219,11 @@ func (s *Server) recordRefusedCandidate(scan *db.Scan, reason error) {
 		Ref:               cmp.Or(scan.Commit, scan.Ref),
 		SubPath:           scan.SubPath,
 		ScopeMode:         scan.ScopeMode,
+		Profile:           scan.Profile,
+		EgressPolicy:      scan.EgressPolicy,
+		MaxCostUSD:        scan.MaxCostUSD,
+		RescanMode:        scan.RescanMode,
+		DiffBaseScanID:    scan.DiffBaseScanID,
 		Experiment:        scan.Experiment,
 		ExperimentConfig:  scan.ExperimentConfig,
 		CandidateOfScanID: &scan.ID,
@@ -254,10 +259,11 @@ func (s *Server) retainedExperiment(scan db.Scan) (name, snapshot string) {
 // fingerprint. Either side is nil when only the other reported it. FindingID
 // is the canonical finding with that fingerprint, 0 when there is none.
 type experimentRow struct {
-	Baseline      *db.FindingObservation
-	Candidate     *db.CandidateObservation
-	FindingID     uint
-	FindingStatus db.FindingLifecycle
+	Baseline       *db.FindingObservation
+	Candidate      *db.CandidateObservation
+	BaselineEffort *db.ExperimentBaselineEffort
+	FindingID      uint
+	FindingStatus  db.FindingLifecycle
 }
 
 // experimentSummary holds the comparison counts. Counts derived from operator
@@ -291,10 +297,13 @@ type experimentSummary struct {
 	BaselineTriaged        int
 	BaselineObservations   int
 	// EffortMinutes sums the analyst time recorded on EffortCount of the
-	// candidate's observations.
-	EffortMinutes int
-	EffortCount   int
-	FailedRuns    int
+	// candidate's observations, BaselineEffortMinutes the time recorded on
+	// BaselineEffortCount of the ordinary scan's.
+	EffortMinutes         int
+	EffortCount           int
+	BaselineEffortMinutes int
+	BaselineEffortCount   int
+	FailedRuns            int
 	// IncompleteRuns counts candidate runs that were cancelled or stopped by
 	// their cost cap or turn limit before covering everything.
 	IncompleteRuns int
@@ -411,6 +420,14 @@ func (s *Server) compareExperiment(baseline, candidate db.Scan) ([]experimentRow
 	if err != nil {
 		return nil, experimentSummary{}, err
 	}
+	var efforts []db.ExperimentBaselineEffort
+	if err := s.DB.Where("baseline_scan_id = ?", baseline.ID).Find(&efforts).Error; err != nil {
+		return nil, experimentSummary{}, err
+	}
+	effortByFP := make(map[string]*db.ExperimentBaselineEffort, len(efforts))
+	for i := range efforts {
+		effortByFP[efforts[i].Fingerprint] = &efforts[i]
+	}
 
 	baseByFP := make(map[string]*db.FindingObservation, len(base))
 	for i := range base {
@@ -421,9 +438,12 @@ func (s *Server) compareExperiment(baseline, candidate db.Scan) ([]experimentRow
 	matched := map[string]bool{}
 	for i := range cand {
 		c := &cand[i]
-		row := experimentRow{Candidate: c, Baseline: baseByFP[c.Fingerprint]}
-		row.FindingID, row.FindingStatus = findings[c.Fingerprint].ID, findings[c.Fingerprint].Status
-		summary.tally(c, row.Baseline == nil, row.FindingID != 0)
+		row := experimentRow{Candidate: c, Baseline: baseByFP[c.Fingerprint], BaselineEffort: effortByFP[c.Fingerprint]}
+		known := findings[c.Fingerprint]
+		row.FindingID, row.FindingStatus = known.ID, known.Status
+		// Known means a finding the repository held before this candidate
+		// ran, so a later scan reporting it does not reclassify the run.
+		summary.tally(c, row.Baseline == nil, known.ID != 0 && known.CreatedAt.Before(candidate.CreatedAt))
 		if row.Baseline == nil {
 			candidateOnly = append(candidateOnly, row)
 			continue
@@ -450,10 +470,16 @@ func (s *Server) compareExperiment(baseline, candidate db.Scan) ([]experimentRow
 		if matched[b.Fingerprint] {
 			continue
 		}
-		baselineOnly = append(baselineOnly, experimentRow{Baseline: b, FindingID: b.FindingID, FindingStatus: findings[b.Fingerprint].Status})
+		baselineOnly = append(baselineOnly, experimentRow{Baseline: b, BaselineEffort: effortByFP[b.Fingerprint], FindingID: b.FindingID, FindingStatus: findings[b.Fingerprint].Status})
 	}
 	summary.Shared, summary.BaselineOnly, summary.CandidateOnly = len(shared), len(baselineOnly), len(candidateOnly)
 	summary.Observations, summary.BaselineObservations = len(cand), len(base)
+	for _, b := range base {
+		if e := effortByFP[b.Fingerprint]; e != nil && e.EffortMinutes != nil {
+			summary.BaselineEffortMinutes += *e.EffortMinutes
+			summary.BaselineEffortCount++
+		}
+	}
 	return slices.Concat(candidateOnly, baselineOnly, shared), summary, nil
 }
 
@@ -505,7 +531,7 @@ func (s *Server) canonicalByFingerprint(repoID uint, base []db.FindingObservatio
 		return out, nil
 	}
 	var rows []db.Finding
-	if err := s.DB.Select("id, fingerprint, status").Where("repository_id = ? AND fingerprint IN ?", repoID, fps).
+	if err := s.DB.Select("id, fingerprint, status, created_at").Where("repository_id = ? AND fingerprint IN ?", repoID, fps).
 		Order("id").Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -550,6 +576,49 @@ func (s *Server) candidateObservationAssess(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.redirect(w, r, fmt.Sprintf("/scans/%d/experiment", obs.ScanID))
+}
+
+// scanBaselineEffort records the analyst time spent on one of the ordinary
+// scan's findings, keyed by its fingerprint in the comparison.
+func (s *Server) scanBaselineEffort(w http.ResponseWriter, r *http.Request) {
+	scan, ok := loadByID[db.Scan](s, w, r)
+	if !ok {
+		return
+	}
+	if scan.IsCandidate() || scan.Experiment == "" {
+		http.Error(w, "baseline effort is recorded on the ordinary scan of an experiment", http.StatusBadRequest)
+		return
+	}
+	fingerprint := r.FormValue("fingerprint")
+	var observed int64
+	if err := s.DB.Model(&db.FindingObservation{}).Where("scan_id = ? AND fingerprint = ?", scan.ID, fingerprint).Count(&observed).Error; err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if observed == 0 {
+		http.Error(w, "the ordinary scan reported no finding with that fingerprint", http.StatusUnprocessableEntity)
+		return
+	}
+	effort, err := parseEffortMinutes(r.FormValue("effort_minutes"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	}
+	if err := db.RecordBaselineEffort(s.DB, db.ExperimentBaselineEffort{
+		BaselineScanID: scan.ID,
+		RepositoryID:   scan.RepositoryID,
+		Fingerprint:    fingerprint,
+		EffortMinutes:  effort,
+		Note:           strings.TrimSpace(r.FormValue("note")),
+	}); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	target := fmt.Sprintf("/scans/%d/experiment", scan.ID)
+	if id, err := strconv.ParseUint(r.FormValue("candidate"), 10, 0); err == nil {
+		target += fmt.Sprintf("?candidate=%d", id)
+	}
+	s.redirect(w, r, target)
 }
 
 // parseEffortMinutes reads the optional analyst time field. Empty means not

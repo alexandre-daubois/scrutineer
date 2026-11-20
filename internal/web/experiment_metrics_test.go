@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"scrutineer/internal/db"
 	"scrutineer/internal/worker"
@@ -110,7 +111,8 @@ func TestScanExperiment_additionalConfirmedSkipsFindingsTheRepositoryAlreadyHas(
 	baseline, candidate, extra := seedComparison(t, s)
 	earlier := db.Scan{RepositoryID: baseline.RepositoryID, Kind: worker.JobSkill, Status: db.ScanDone, SkillName: baseline.SkillName}
 	s.DB.Create(&earlier)
-	s.DB.Create(&db.Finding{RepositoryID: baseline.RepositoryID, ScanID: earlier.ID, Title: "Open redirect", Severity: "Low", Fingerprint: "fp-known", Status: db.FindingNew})
+	s.DB.Create(&db.Finding{RepositoryID: baseline.RepositoryID, ScanID: earlier.ID, Title: "Open redirect", Severity: "Low", Fingerprint: "fp-known", Status: db.FindingNew,
+		CreatedAt: candidate.CreatedAt.Add(-time.Hour)})
 	other := db.Repository{URL: "https://example.com/other", Name: "other"}
 	s.DB.Create(&other)
 	otherScan := db.Scan{RepositoryID: other.ID, Kind: worker.JobSkill, Status: db.ScanDone, SkillName: baseline.SkillName}

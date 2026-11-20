@@ -72,6 +72,11 @@ func loadScanReportSkill(gdb *gorm.DB, scan *db.Scan) *db.Skill {
 }
 
 func hasExportableScanReport(gdb *gorm.DB, scan *db.Scan, skill *db.Skill) bool {
+	// The export renders repository findings, which a candidate never writes;
+	// its observations are read on the comparison page.
+	if scan.IsCandidate() {
+		return false
+	}
 	if isDiscloseScanReport(scan, skill) {
 		return renderSavedDisclosureScanReport(gdb, scan) != ""
 	}

@@ -72,6 +72,19 @@ func (w *Worker) parseCandidateOutput(skill *db.Skill, scan *db.Scan, report str
 	if err := db.RecordCandidateObservations(w.DB, obs...); err != nil {
 		return fmt.Errorf("record candidate observations: %w", err)
 	}
+	// A finding the run streamed and then left out of its report was
+	// retracted, as markRetracted records for an ordinary scan.
+	retracted := w.DB.Where("scan_id = ?", scan.ID)
+	if len(obs) > 0 {
+		fps := make([]string, len(obs))
+		for i, o := range obs {
+			fps[i] = o.Fingerprint
+		}
+		retracted = retracted.Where("fingerprint NOT IN ?", fps)
+	}
+	if err := retracted.Delete(&db.CandidateObservation{}).Error; err != nil {
+		return fmt.Errorf("drop retracted candidate observations: %w", err)
+	}
 	emit(Event{Kind: KindText, Text: fmt.Sprintf("recorded %d candidate observation(s), repository findings unchanged", len(obs))})
 	return nil
 }

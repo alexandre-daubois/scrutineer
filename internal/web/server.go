@@ -650,6 +650,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /scans/{id}/experiment", s.scanExperiment)
 	mux.HandleFunc("POST /scans/{id}/experiment-decision", s.scanExperimentDecision)
 	mux.HandleFunc("POST /candidate-observations/{id}/assessment", s.candidateObservationAssess)
+	mux.HandleFunc("POST /scans/{id}/baseline-effort", s.scanBaselineEffort)
 	mux.HandleFunc("POST /scans/{id}/resume", s.scanResume)
 	mux.HandleFunc("POST /scans/pause-queued", s.scansPauseQueued)
 	mux.HandleFunc("POST /scans/resume-paused", s.scansResumePaused)
@@ -3361,7 +3362,7 @@ func (s *Server) deleteRepository(repo db.Repository) (deletedRepository, error)
 			&db.Finding{}, &db.Scan{}, &db.Subproject{}, &db.Dependency{},
 			&db.Dependent{}, &db.Package{}, &db.Advisory{}, &db.AdvisoryAudit{}, &db.SBOMUpload{},
 			&db.PackageAlternative{}, &db.ExpectedFinding{}, &db.ComplianceControl{}, &db.ScanGroupBudget{}, &db.ImportArtifact{},
-			&db.CandidateObservation{}, &db.ExperimentDecision{},
+			&db.CandidateObservation{}, &db.ExperimentDecision{}, &db.ExperimentBaselineEffort{},
 		} {
 			if err := tx.Where("repository_id = ?", repo.ID).Delete(child).Error; err != nil {
 				return err

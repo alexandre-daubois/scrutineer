@@ -1757,7 +1757,7 @@ func Models() []any {
 		&Repository{}, &Scan{},
 		&Finding{}, &FindingLabel{}, &FindingNote{}, &DisclosureSubmission{},
 		&FindingCommunication{}, &FindingReference{}, &FindingHistory{}, &FindingReview{}, &FeedbackConfirmation{}, &FindingVerification{}, &FindingAttackPath{}, &FindingObservation{}, &ScanPreflightReceipt{}, &ScanGroupBudget{},
-		&CandidateObservation{}, &ExperimentDecision{},
+		&CandidateObservation{}, &ExperimentDecision{}, &ExperimentBaselineEffort{},
 		&RemediationAttempt{}, &RemediationValidation{}, &AuditEvent{}, &FindingPoC{}, &ImportArtifact{},
 		&Dependency{}, &ExpectedFinding{}, &Package{}, &PackageAlternative{}, &Dependent{}, &FindingDependent{}, &Advisory{}, &AdvisoryAudit{},
 		&Maintainer{}, &MaintainerActivity{}, &Skill{}, &Subproject{}, &ComplianceControl{},

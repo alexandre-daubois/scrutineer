@@ -36,13 +36,14 @@
   <div><dt class="text-muted-foreground font-semibold">Assessed</dt><dd>{{$.Summary.Assessed}} of {{$.Summary.Observations}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Additional confirmed</dt><dd>{{template "experiment-assessed-count" (dict "N" $.Summary.AdditionalConfirmed "Assessed" $.Summary.CandidateOnlyAssessed "Of" $.Summary.CandidateOnly)}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Confirmed, already known</dt><dd>{{template "experiment-assessed-count" (dict "N" $.Summary.KnownConfirmed "Assessed" $.Summary.CandidateOnlyAssessed "Of" $.Summary.CandidateOnly)}}</dd></div>
-  <div><dt class="text-muted-foreground font-semibold">Missed by candidate, confirmed</dt><dd>{{if $.Summary.BaselineTriaged}}{{$.Summary.MissedConfirmed}} <span class="text-muted-foreground">of {{$.Summary.BaselineTriaged}} triaged</span>{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Missed by candidate, confirmed</dt><dd>{{if not $.Summary.BaselineOnly}}0{{else if $.Summary.BaselineTriaged}}{{$.Summary.MissedConfirmed}} <span class="text-muted-foreground">of {{$.Summary.BaselineTriaged}} triaged</span>{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Candidate false positives</dt><dd>{{template "experiment-assessed-count" (dict "N" $.Summary.FalsePositives "Assessed" $.Summary.Assessed "Of" $.Summary.Observations)}}</dd></div>
-  <div><dt class="text-muted-foreground font-semibold">Baseline false positives</dt><dd>{{if $.Summary.BaselineTriaged}}{{$.Summary.BaselineFalsePositives}} <span class="text-muted-foreground">of {{$.Summary.BaselineTriaged}} triaged</span>{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Baseline false positives</dt><dd>{{if not $.Summary.BaselineObservations}}0{{else if $.Summary.BaselineTriaged}}{{$.Summary.BaselineFalsePositives}} <span class="text-muted-foreground">of {{$.Summary.BaselineTriaged}} triaged</span>{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Candidate analyst effort</dt><dd>{{if $.Summary.EffortCount}}{{$.Summary.EffortMinutes}} min <span class="text-muted-foreground">on {{$.Summary.EffortCount}} of {{$.Summary.Observations}}</span>{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
-  <div><dt class="text-muted-foreground font-semibold">Baseline analyst effort</dt><dd><span class="text-muted-foreground" data-tooltip="Scrutineer records no analyst time on repository findings">unavailable</span></dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Baseline analyst effort</dt><dd>{{if $.Summary.BaselineEffortCount}}{{$.Summary.BaselineEffortMinutes}} min <span class="text-muted-foreground">on {{$.Summary.BaselineEffortCount}} of {{$.Summary.BaselineObservations}}</span>{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Failed candidate runs</dt><dd>{{$.Summary.FailedRuns}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Incomplete candidate runs</dt><dd>{{$.Summary.IncompleteRuns}}</dd></div>
+  <div><dt class="text-muted-foreground font-semibold">Cost, this candidate run</dt><dd>{{if or $cand.CostUnpriced (not (gt $cand.CostUSD 0.0))}}<span class="text-muted-foreground">unavailable</span>{{else}}{{usd $cand.CostUSD}}{{end}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Cost, all candidate runs</dt><dd>{{if or $.Summary.CostUnavailable (not (gt $.Summary.CandidateCost 0.0))}}<span class="text-muted-foreground">unavailable</span>{{else}}{{usd $.Summary.CandidateCost}}{{end}}</dd></div>
   <div><dt class="text-muted-foreground font-semibold">Cost, ordinary scan</dt><dd>{{if or $base.CostUnpriced (not (gt $base.CostUSD 0.0))}}<span class="text-muted-foreground">unavailable</span>{{else}}{{usd $base.CostUSD}}{{end}}</dd></div>
 </dl>
@@ -54,6 +55,7 @@
   </tr></thead>
   <tbody>
   {{range $.Rows}}
+    {{$row := .}}
     <tr>
       <td class="whitespace-normal">
         {{if .Candidate}}<span class="font-medium">{{.Candidate.Title}}</span><div class="text-xs text-muted-foreground"><code>{{.Candidate.Location}}</code></div>
@@ -77,7 +79,17 @@
           <input type="text" name="note" class="input text-xs w-48" placeholder="Note" aria-label="Assessment note" value="{{.AssessmentNote}}">
           <button type="submit" class="btn-outline text-xs">Save</button>
         </form>
-        {{else}}<span class="text-xs text-muted-foreground">Triaged on the repository finding</span>{{end}}
+        {{end}}
+        {{with .Baseline}}
+        <form method="post" action="/scans/{{$base.ID}}/baseline-effort" class="flex flex-wrap items-center gap-2 mt-1">
+          <input type="hidden" name="fingerprint" value="{{.Fingerprint}}">
+          <input type="hidden" name="candidate" value="{{$cand.ID}}">
+          <span class="text-xs text-muted-foreground">Ordinary finding, triaged on the repository finding:</span>
+          <input type="number" name="effort_minutes" min="0" step="1" class="input text-xs w-24" placeholder="Minutes" aria-label="Analyst minutes on the ordinary finding" value="{{with $row.BaselineEffort}}{{with .EffortMinutes}}{{.}}{{end}}{{end}}">
+          <input type="text" name="note" class="input text-xs w-48" placeholder="Note" aria-label="Ordinary finding note" value="{{with $row.BaselineEffort}}{{.Note}}{{end}}">
+          <button type="submit" class="btn-outline text-xs">Save</button>
+        </form>
+        {{end}}
       </td>
     </tr>
   {{end}}
@@ -109,7 +121,7 @@
 <p class="text-sm text-muted-foreground">{{if $base.Status.Terminal}}No candidate run exists for scan #{{$base.ID}}. One starts only once the scan records its findings. A candidate that could not start appears above as a failed run with its reason.{{else}}No candidate has run yet. One starts once scan #{{$base.ID}} records its findings.{{end}}</p>
 {{end}}
 
-{{define "experiment-assessed-count"}}{{if .Assessed}}{{.N}}{{if lt .Assessed .Of}} <span class="text-muted-foreground">of {{.Assessed}} assessed</span>{{end}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}{{end}}
+{{define "experiment-assessed-count"}}{{if not .Of}}0{{else if .Assessed}}{{.N}}{{if lt .Assessed .Of}} <span class="text-muted-foreground">of {{.Assessed}} assessed</span>{{end}}{{else}}<span class="text-muted-foreground">unavailable</span>{{end}}{{end}}
 
 {{define "experiment-evidence"}}
 <details class="text-xs mt-1">

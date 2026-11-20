@@ -67,6 +67,22 @@ type ExperimentDecision struct {
 	CreatedAt time.Time
 }
 
+// ExperimentBaselineEffort is the analyst time an operator recorded against
+// one of the ordinary scan's findings while comparing it with candidate runs,
+// so effort is measured on both sides. Finding and observation rows are not
+// touched.
+type ExperimentBaselineEffort struct {
+	ID             uint   `gorm:"primarykey"`
+	BaselineScanID uint   `gorm:"not null;uniqueIndex:idx_experiment_baseline_effort,priority:1"`
+	RepositoryID   uint   `gorm:"index;not null"`
+	Fingerprint    string `gorm:"not null;uniqueIndex:idx_experiment_baseline_effort,priority:2"`
+	// EffortMinutes is nil when the operator cleared it.
+	EffortMinutes *int
+	Note          string `gorm:"type:text"`
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
 // IsCandidate reports whether the scan is a candidate run, whose output is
 // kept apart from the repository's findings.
 func (s Scan) IsCandidate() bool {
@@ -102,6 +118,15 @@ func CandidateObservationFromFinding(scan *Scan, f *Finding) CandidateObservatio
 // RecordCandidateObservations upserts each observation on its (scan,
 // fingerprint) pair. A repeat write replaces the reported content so the
 // final report wins over a streamed preview, and leaves any assessment alone.
+// RecordBaselineEffort upserts the analyst time recorded on one of the
+// ordinary scan's findings.
+func RecordBaselineEffort(gdb *gorm.DB, row ExperimentBaselineEffort) error {
+	return gdb.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "baseline_scan_id"}, {Name: "fingerprint"}},
+		DoUpdates: clause.AssignmentColumns([]string{"effort_minutes", "note", "updated_at"}),
+	}).Create(&row).Error
+}
+
 func RecordCandidateObservations(gdb *gorm.DB, obs ...CandidateObservation) error {
 	if len(obs) == 0 {
 		return nil

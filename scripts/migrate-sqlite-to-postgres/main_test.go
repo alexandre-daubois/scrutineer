@@ -263,6 +263,7 @@ func seedHistory(t *testing.T, src *gorm.DB) {
 		&db.FindingObservation{FindingID: 1, ScanID: 1, RepositoryID: 1, Commit: "abc123", Severity: "High", Evidence: `{"trace":"t"}`},
 		&db.CandidateObservation{ScanID: 1, RepositoryID: 1, Fingerprint: "fp", Severity: "High", Assessment: db.CandidateConfirmed},
 		&db.ExperimentDecision{RepositoryID: 1, CandidateScanID: 1, Experiment: "trial", Decision: db.ExperimentAdopt},
+		&db.ExperimentBaselineEffort{BaselineScanID: 1, RepositoryID: 1, Fingerprint: "fp", EffortMinutes: new(15)},
 		&db.RemediationAttempt{FindingID: 1, PatchScanID: 1, Attempt: 1, Patch: "diff", BaseCommit: "abc123"},
 		&db.RemediationValidation{FindingID: 1, RemediationAttemptID: 1, ScanID: 1, RootCauseStatus: "failed_to_bypass", Report: "{}"},
 		&db.AuditEvent{Kind: "finding.status", SubjectType: "finding", SubjectID: 1, Payload: "{}"},

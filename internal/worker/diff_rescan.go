@@ -239,6 +239,17 @@ func (w *Worker) planDiff(ctx context.Context, scan *db.Scan, baseline db.Scan, 
 }
 
 func (w *Worker) diffBaseline(scan *db.Scan) (db.Scan, bool) {
+	skillName, ref := scan.SkillName, scan.Ref
+	if scan.IsCandidate() {
+		// A candidate is pinned to a commit and may run another skill, so it
+		// diffs against the base its ordinary scan used, under that scan's
+		// skill and ref.
+		ordinary, err := w.candidateBaseline(scan)
+		if err != nil {
+			return db.Scan{}, false
+		}
+		skillName, ref = ordinary.SkillName, ordinary.Ref
+	}
 	// Not(map) lets GORM's dialector quote the reserved-word column
 	// (`commit` on SQLite, "commit" on Postgres) instead of hardcoding one style.
 	q := db.ProductionScans(w.DB.Where("repository_id = ? AND status = ?", scan.RepositoryID, db.ScanDone)).
@@ -246,17 +257,17 @@ func (w *Worker) diffBaseline(scan *db.Scan) (db.Scan, bool) {
 	if scan.DiffBaseScanID != nil {
 		q = q.Where("id = ?", *scan.DiffBaseScanID)
 	} else {
-		q = q.Where("COALESCE(exploration_mode, '') = ''").Where("skill_name = ? AND sub_path = ? AND ref = ? AND focus_area = ? AND id <> ?", scan.SkillName, scan.SubPath, scan.Ref, scan.FocusArea, scan.ID).
+		q = q.Where("COALESCE(exploration_mode, '') = ''").Where("skill_name = ? AND sub_path = ? AND ref = ? AND focus_area = ? AND id <> ?", skillName, scan.SubPath, ref, scan.FocusArea, scan.ID).
 			Order("id desc")
 	}
 	var baseline db.Scan
 	if err := q.First(&baseline).Error; err != nil {
 		return db.Scan{}, false
 	}
-	if baseline.RepositoryID != scan.RepositoryID || baseline.SubPath != scan.SubPath || baseline.Ref != scan.Ref {
+	if baseline.RepositoryID != scan.RepositoryID || baseline.SubPath != scan.SubPath || baseline.Ref != ref {
 		return db.Scan{}, false
 	}
-	if baseline.ExplorationMode != "" || baseline.SkillName != scan.SkillName || baseline.FocusArea != scan.FocusArea {
+	if baseline.ExplorationMode != "" || baseline.SkillName != skillName || baseline.FocusArea != scan.FocusArea {
 		return db.Scan{}, false
 	}
 	return baseline, true
