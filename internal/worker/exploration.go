@@ -49,21 +49,38 @@ func ValidateExploration(scan *db.Scan, skill string) error {
 	return nil
 }
 
-// ValidateExplorationRunner rejects host execution, where an agent can bypass
-// callback-token restrictions through the loopback exports, whose operator
-// token sits in the data directory a host process can read.
+// ValidateExplorationRunner rejects host execution for an exploratory audit.
 func (w *Worker) ValidateExplorationRunner(skill string) error {
+	if w.runsOnHost(skill) {
+		return fmt.Errorf("exploratory audit requires a container runner; host execution is not supported")
+	}
+	return nil
+}
+
+// ValidateCandidateRunner rejects host execution for a candidate scan, whose
+// write restrictions live in its callback token.
+func (w *Worker) ValidateCandidateRunner(skill string) error {
+	if w.runsOnHost(skill) {
+		return fmt.Errorf("a candidate scan requires a container runner; host execution is not supported")
+	}
+	return nil
+}
+
+// runsOnHost reports whether skill runs outside a container, where an agent
+// can bypass callback-token restrictions through the loopback exports, whose
+// operator token sits in the data directory a host process can read.
+func (w *Worker) runsOnHost(skill string) bool {
 	runner := w.Runner
 	for {
 		switch r := runner.(type) {
 		case LocalClaude, *LocalClaude:
-			return fmt.Errorf("exploratory audit requires a container runner; host execution is not supported")
+			return true
 		case HostSplitRunner:
 			runner = r.runnerFor(skill)
 		case *HostSplitRunner:
 			runner = r.runnerFor(skill)
 		default:
-			return nil
+			return false
 		}
 	}
 }

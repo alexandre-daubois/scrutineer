@@ -139,14 +139,15 @@ func TestCandidateJob_mismatchedInputsFail(t *testing.T) {
 			}
 		}, `candidate source commit "abc" differs`},
 		{"edited scan config", func(t *testing.T, j *candidateJob) {
-			recipe, err := buildScanRecipe(j.baseline, "", j.repo.ThreatModel, "attack_surface: admin panel")
-			if err != nil {
+			if err := j.w.DB.Model(&db.Repository{}).Where("id = ?", j.repo.ID).Update("scan_config", "attack_surface: admin panel").Error; err != nil {
 				t.Fatal(err)
 			}
-			if err := j.w.DB.Model(j.baseline).Update("recipe", recipe).Error; err != nil {
+		}, "scan config, threat model or analyst feedback staged for this candidate differs"},
+		{"other scope", func(t *testing.T, j *candidateJob) {
+			if err := j.w.DB.Model(j.baseline).Update("sub_path", "pkg").Error; err != nil {
 				t.Fatal(err)
 			}
-		}, "scan config changed"},
+		}, "candidate scope"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			j := newCandidateJob(t, fakeRunner{skillRes: SkillResult{Commit: "abc", Report: candidateReport}})
@@ -195,6 +196,11 @@ func TestCandidateJob_hardScopeIsNotWidened(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if tc.candidate {
+				if err := j.w.DB.Model(j.baseline).Updates(map[string]any{"sub_path": "pkg", "scope_mode": "hard"}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
 			if err := j.w.DB.Model(scan).Updates(map[string]any{"sub_path": "pkg", "scope_mode": "hard"}).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -213,7 +219,7 @@ func TestCandidateJob_hardScopeIsNotWidened(t *testing.T) {
 
 func stagedDigest(t *testing.T, model string) string {
 	t.Helper()
-	digest, err := stagedInputsDigest(model, nil)
+	digest, err := stagedInputsDigest(candidateJobScanConfig, model, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3920,7 +3920,7 @@ func (s *Server) skillEnqueuePreflight(repo db.Repository, skillID uint, opts Sc
 	if hasSkill && sk.RequiresProfile != "" && opts.Profile != "" && opts.Profile != sk.RequiresProfile {
 		return db.Skill{}, false, fmt.Errorf("%w: %q needs %q, got %q", ErrSkillProfileMismatch, sk.Name, sk.RequiresProfile, opts.Profile)
 	}
-	if err := s.validateExperimentEnqueue(repo, opts, sk); err != nil {
+	if err := s.validateExperimentEnqueue(repo, skillID, opts, sk); err != nil {
 		return db.Skill{}, false, err
 	}
 	return sk, hasSkill, nil

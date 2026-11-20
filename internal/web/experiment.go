@@ -30,7 +30,7 @@ const findingsOutputKind = "findings"
 // triage cohort, so none of its output can reach a sibling. The configuration
 // snapshot is checked here so a bad entry fails the form instead of the
 // candidate.
-func (s *Server) validateExperimentEnqueue(repo db.Repository, opts ScanOpts, sk db.Skill) error {
+func (s *Server) validateExperimentEnqueue(repo db.Repository, skillID uint, opts ScanOpts, sk db.Skill) error {
 	if opts.Experiment == "" && opts.CandidateOfScanID == nil {
 		return nil
 	}
@@ -51,7 +51,10 @@ func (s *Server) validateExperimentEnqueue(repo db.Repository, opts ScanOpts, sk
 		return err
 	}
 	if opts.CandidateOfScanID == nil {
-		return s.checkExperimentConfig(exp)
+		return s.checkExperimentConfig(exp, skillID)
+	}
+	if err := s.Worker.ValidateCandidateRunner(sk.Name); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidExperiment, err)
 	}
 	if opts.ScanGroup != "" || opts.TriageScanID != nil || opts.FocusArea != "" {
 		return fmt.Errorf("%w: a candidate scan joins no scan group or triage cohort", ErrInvalidExperiment)
@@ -91,27 +94,50 @@ func parseExperimentConfig(raw string) (config.ScanExperiment, error) {
 }
 
 // checkExperimentConfig reports why an experiment snapshot cannot run on this
-// instance: its model or skill no longer resolves.
-func (s *Server) checkExperimentConfig(exp config.ScanExperiment) error {
+// instance against the ordinary scan's skill: its model or skill no longer
+// resolves, or the candidate's skill would run on the host.
+func (s *Server) checkExperimentConfig(exp config.ScanExperiment, baselineSkillID uint) error {
 	if exp.Model != "" && !ValidModelPreference(exp.Model) {
 		return fmt.Errorf("%w: model %q is not configured", ErrInvalidExperiment, exp.Model)
 	}
-	_, err := s.experimentSkill(exp, 0)
-	return err
-}
-
-// experimentSkill resolves the skill a candidate runs: the experiment's own
-// when it names one, which must be an active findings skill, else fallback.
-func (s *Server) experimentSkill(exp config.ScanExperiment, fallback uint) (uint, error) {
-	if exp.Skill == "" {
-		return fallback, nil
+	skillID, err := s.experimentSkill(exp, baselineSkillID)
+	if err != nil {
+		return err
 	}
 	var sk db.Skill
-	if err := s.DB.Select("id, active, output_kind").Where("name = ?", exp.Skill).First(&sk).Error; err != nil {
+	if err := s.DB.Select("name").First(&sk, skillID).Error; err != nil {
+		return fmt.Errorf("%w: load skill: %w", ErrInvalidExperiment, err)
+	}
+	if err := s.Worker.ValidateCandidateRunner(sk.Name); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidExperiment, err)
+	}
+	return nil
+}
+
+// experimentSkillScope are the skill columns that decide which files a scan
+// stages, so a variant skill has to match its baseline on them.
+var experimentSkillScope = []string{"ID", "Name", "Active", "OutputKind", "Paths", "IgnorePaths", "RecurseSubmodules", "FullHistory"}
+
+// experimentSkill resolves the skill a candidate runs: the experiment's own
+// when it names one, which must be an active findings skill staging the same
+// files as the ordinary scan's skill, else that skill.
+func (s *Server) experimentSkill(exp config.ScanExperiment, baselineSkillID uint) (uint, error) {
+	if exp.Skill == "" {
+		return baselineSkillID, nil
+	}
+	var sk db.Skill
+	if err := s.DB.Select(experimentSkillScope).Where("name = ?", exp.Skill).First(&sk).Error; err != nil {
 		return 0, fmt.Errorf("%w: skill %q: %w", ErrInvalidExperiment, exp.Skill, err)
 	}
 	if !sk.Active || sk.OutputKind != findingsOutputKind {
 		return 0, fmt.Errorf("%w: skill %q is not an active findings skill", ErrInvalidExperiment, exp.Skill)
+	}
+	var base db.Skill
+	if err := s.DB.Select(experimentSkillScope).First(&base, baselineSkillID).Error; err != nil {
+		return 0, fmt.Errorf("%w: load the ordinary scan's skill: %w", ErrInvalidExperiment, err)
+	}
+	if sk.Paths != base.Paths || sk.IgnorePaths != base.IgnorePaths || sk.RecurseSubmodules != base.RecurseSubmodules || sk.FullHistory != base.FullHistory {
+		return 0, fmt.Errorf("%w: skill %q stages different files than %q (paths, ignore_paths, submodules or history differ)", ErrInvalidExperiment, exp.Skill, base.Name)
 	}
 	return sk.ID, nil
 }
@@ -145,7 +171,7 @@ func (s *Server) startCandidate(scan *db.Scan) error {
 	if err != nil {
 		return err
 	}
-	if err := s.checkExperimentConfig(exp); err != nil {
+	if err := s.checkExperimentConfig(exp, *scan.SkillID); err != nil {
 		return err
 	}
 	skillID, err := s.experimentSkill(exp, *scan.SkillID)
@@ -178,7 +204,7 @@ func (s *Server) recordRefusedCandidate(scan *db.Scan, reason error) {
 	now := time.Now()
 	exp, _ := parseExperimentConfig(scan.ExperimentConfig)
 	skillID, skillName := scan.SkillID, scan.SkillName
-	if id, err := s.experimentSkill(exp, 0); err == nil && id != 0 {
+	if id, err := s.experimentSkill(exp, *scan.SkillID); err == nil && exp.Skill != "" {
 		skillID, skillName = &id, exp.Skill
 	}
 	row := db.Scan{
@@ -218,7 +244,7 @@ func (s *Server) retainedExperiment(scan db.Scan) (name, snapshot string) {
 		return scan.Experiment, scan.ExperimentConfig
 	}
 	exp, err := parseExperimentConfig(scan.ExperimentConfig)
-	if err != nil || s.checkExperimentConfig(exp) != nil {
+	if err != nil || scan.SkillID == nil || s.checkExperimentConfig(exp, *scan.SkillID) != nil {
 		return "", ""
 	}
 	return scan.Experiment, scan.ExperimentConfig
@@ -252,6 +278,12 @@ type experimentSummary struct {
 	// KnownConfirmed counts confirmed candidate-only observations that match a
 	// repository finding an earlier scan reported but the baseline missed.
 	KnownConfirmed int
+	// CandidateOnlyAssessed is how many candidate-only observations carry an
+	// assessment, which the candidate-only counts rest on.
+	CandidateOnlyAssessed int
+	// MissedConfirmed counts baseline-only observations whose repository
+	// finding an analyst triaged as real: vulnerabilities the candidate missed.
+	MissedConfirmed int
 	// BaselineFalsePositives counts baseline observations whose repository
 	// finding was rejected, out of BaselineTriaged whose finding an analyst
 	// has moved past new or enriched.
@@ -266,6 +298,11 @@ type experimentSummary struct {
 	// IncompleteRuns counts candidate runs that were cancelled or stopped by
 	// their cost cap or turn limit before covering everything.
 	IncompleteRuns int
+	// CandidateCost sums the cost of every candidate run, retries included.
+	// CostUnavailable is set when any run consumed tokens no price is known
+	// for, so the sum would understate it.
+	CandidateCost   float64
+	CostUnavailable bool
 }
 
 // scanExperiment renders the comparison between an ordinary scan and the
@@ -311,6 +348,10 @@ func (s *Server) scanExperiment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, run := range runs {
+		summary.CandidateCost += run.CostUSD
+		if run.CostUnpriced() {
+			summary.CostUnavailable = true
+		}
 		switch {
 		case run.Status == db.ScanFailed:
 			summary.FailedRuns++
@@ -398,8 +439,13 @@ func (s *Server) compareExperiment(baseline, candidate db.Scan) ([]experimentRow
 		case db.FindingRejected:
 			summary.BaselineTriaged++
 			summary.BaselineFalsePositives++
+		case db.FindingDuplicate:
+			summary.BaselineTriaged++
 		default:
 			summary.BaselineTriaged++
+			if !matched[b.Fingerprint] {
+				summary.MissedConfirmed++
+			}
 		}
 		if matched[b.Fingerprint] {
 			continue
@@ -417,6 +463,9 @@ func (sum *experimentSummary) tally(c *db.CandidateObservation, candidateOnly, k
 		sum.Unassessed++
 	case db.CandidateConfirmed:
 		sum.Assessed++
+		if candidateOnly {
+			sum.CandidateOnlyAssessed++
+		}
 		switch {
 		case candidateOnly && knownToRepository:
 			sum.KnownConfirmed++
@@ -426,8 +475,14 @@ func (sum *experimentSummary) tally(c *db.CandidateObservation, candidateOnly, k
 	case db.CandidateFalsePositive:
 		sum.Assessed++
 		sum.FalsePositives++
+		if candidateOnly {
+			sum.CandidateOnlyAssessed++
+		}
 	default:
 		sum.Assessed++
+		if candidateOnly {
+			sum.CandidateOnlyAssessed++
+		}
 	}
 	if c.EffortMinutes != nil {
 		sum.EffortMinutes += *c.EffortMinutes

@@ -267,7 +267,7 @@ func (s *Server) recordScheduledSkip(repo db.Repository, reason string) {
 	// between ends the run and keeps its row (Select stays narrow so the
 	// lookup never pulls the log/report/prompt text columns).
 	var prev db.Scan
-	if err := s.DB.Select("id, kind, status, error").
+	if err := db.ProductionScans(s.DB.Select("id, kind, status, error")).
 		Where("repository_id = ?", repo.ID).Order("id desc").First(&prev).Error; err == nil &&
 		prev.Kind == scheduleKind && prev.Status == db.ScanSkipped && prev.Error == reason {
 		if err := s.DB.Delete(&db.Scan{}, prev.ID).Error; err != nil {

@@ -84,7 +84,11 @@ func hostileCandidate(t *testing.T, baselineScanConfig string) (*Worker, *srcLis
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.DB.Model(baseline).Update("recipe", recipe).Error; err != nil {
+	digest, err := stagedInputsDigest(baselineScanConfig, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.DB.Model(baseline).Updates(map[string]any{"recipe": recipe, "staged_inputs_sha256": digest}).Error; err != nil {
 		t.Fatal(err)
 	}
 	skill := db.Skill{Name: candidate.SkillName, Body: "Audit.", OutputFile: "report.json", OutputKind: "findings",
@@ -153,7 +157,7 @@ func TestCandidateSourceConfig_checkoutCannotSteerTheRun(t *testing.T) {
 func TestCandidateSourceConfig_scanConfigChangeFailsBeforeTheRun(t *testing.T) {
 	w, runner, _, row := hostileCandidate(t, "skip: [vendor/**]")
 	got := runQueuedScan(t, w, row.ID)
-	if got.Status != db.ScanFailed || !strings.Contains(got.Error, "scan config changed") {
+	if got.Status != db.ScanFailed || !strings.Contains(got.Error, "scan config, threat model or analyst feedback staged for this candidate differs") {
 		t.Fatalf("status = %s error %q, want failed on the scan config change", got.Status, got.Error)
 	}
 	if runner.ran {

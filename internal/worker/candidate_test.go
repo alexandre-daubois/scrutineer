@@ -181,14 +181,16 @@ func TestCandidate_inputsMustMatchTheBaseline(t *testing.T) {
 	}{
 		{"same inputs", "abc", "tm", "cfg", ""},
 		{"other commit", "def", "tm", "cfg", "source commit"},
-		{"edited scan config", "abc", "tm", "", "scan config changed"},
+		{"other scope", "abc", "tm", "pkg", "candidate scope"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w, repo := observationWorker(t)
 			baseline, candidate := candidatePair(t, w, repo)
 			w.DB.Model(baseline).Update("recipe", recipe(t, baseline, "tm", "cfg"))
 			candidate.Commit = tc.commit
-			candidate.Repository.ScanConfig = tc.config
+			if tc.config == "pkg" {
+				candidate.SubPath = "pkg"
+			}
 			err := w.checkCandidateInputs(candidate)
 			if tc.want == "" {
 				if err != nil {

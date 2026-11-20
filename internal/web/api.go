@@ -558,11 +558,13 @@ func (s *Server) apiRunFindingSkill(w http.ResponseWriter, r *http.Request) {
 }
 
 // agentAPIRepoHasCapacity rejects scan-token enqueue requests once the target
-// repository already has the maximum number of queued or running scans.
+// repository already has the maximum number of queued or running scans. A
+// candidate run does not take a slot, so a trial never holds back the work the
+// ordinary pipeline asks for.
 func (s *Server) agentAPIRepoHasCapacity(w http.ResponseWriter, repoID uint) bool {
 	var open int64
 	if err := s.DB.Model(&db.Scan{}).
-		Where("repository_id = ? AND status IN ?", repoID, []db.ScanStatus{db.ScanQueued, db.ScanRunning}).
+		Where("repository_id = ? AND status IN ? AND candidate_of_scan_id IS NULL", repoID, []db.ScanStatus{db.ScanQueued, db.ScanRunning}).
 		Count(&open).Error; err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return false

@@ -83,7 +83,7 @@ func TestScanExperiment_talliesFalsePositivesAndAssessed(t *testing.T) {
 	page := getRepoPagePath(t, s, fmt.Sprintf("/scans/%d/experiment", baseline.ID))
 	for label, want := range map[string]string{
 		"Candidate false positives": "1 of 1 assessed",
-		"Additional confirmed":      "0 of 1 assessed",
+		"Additional confirmed":      "0",
 		"Assessed":                  "1 of 2",
 	} {
 		if got := experimentMeasurement(t, page, label); got != want {
@@ -133,8 +133,8 @@ func TestScanExperiment_additionalConfirmedSkipsFindingsTheRepositoryAlreadyHas(
 
 	assessObservation(t, s, extra.ID, url.Values{"assessment": {db.CandidateConfirmed}})
 	page = getRepoPagePath(t, s, fmt.Sprintf("/scans/%d/experiment", baseline.ID))
-	if got := experimentMeasurement(t, page, "Additional confirmed"); got != "1 of 2 assessed" {
-		t.Errorf("Additional confirmed = %q after confirming a finding only another repository has, want 1 of 2 assessed", got)
+	if got := experimentMeasurement(t, page, "Additional confirmed"); got != "1" {
+		t.Errorf("Additional confirmed = %q after confirming a finding only another repository has, want 1", got)
 	}
 }
 

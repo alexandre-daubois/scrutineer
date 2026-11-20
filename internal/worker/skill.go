@@ -220,6 +220,9 @@ func (w *Worker) doSkill(ctx context.Context, scan *db.Scan, emit func(Event)) (
 		w.clearCloneError(scan)
 	}
 	if scan.IsCandidate() {
+		if err := w.ValidateCandidateRunner(skill.Name); err != nil {
+			return "", err
+		}
 		if err := w.checkCandidateInputs(scan); err != nil {
 			return "", err
 		}

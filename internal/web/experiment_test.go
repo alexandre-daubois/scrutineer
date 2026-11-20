@@ -558,7 +558,7 @@ func TestScanExperiment_comparesRunsAndKeepsMissingMeasurementsUnavailable(t *te
 			t.Errorf("comparison page lacks %q", want)
 		}
 	}
-	for label, want := range map[string]string{"Additional confirmed": "1 of 1 assessed", "Candidate analyst effort": "25 min on 1 of 2"} {
+	for label, want := range map[string]string{"Additional confirmed": "1", "Candidate analyst effort": "25 min on 1 of 2"} {
 		if got := experimentMeasurement(t, page, label); got != want {
 			t.Errorf("%s = %q, want %q", label, got, want)
 		}

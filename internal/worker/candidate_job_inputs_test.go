@@ -41,20 +41,30 @@ func TestCandidateJobInputs_stagedInputsMustMatchTheBaseline(t *testing.T) {
 	}
 }
 
-// A resumed candidate whose recipe was sealed at its first claim is checked
-// against the repository scan config as it stands now, not against that recipe.
+// A run is checked against the scan config it applies, not a recipe sealed at
+// an earlier claim, on the candidate side and on the baseline side alike.
 func TestCandidateJobInputs_resumedRunChecksTheLiveScanConfig(t *testing.T) {
+	const edited = "attack_surface: admin panel"
 	for _, tc := range []struct {
-		name       string
-		scanConfig string
-		wantStatus db.ScanStatus
-		wantError  string
+		name           string
+		scanConfig     string
+		baselineConfig string
+		wantStatus     db.ScanStatus
+		wantError      string
 	}{
-		{"scan config unchanged", candidateJobScanConfig, db.ScanDone, ""},
-		{"scan config edited while paused", "attack_surface: admin panel", db.ScanFailed, "scan config changed"},
+		{"scan config unchanged", candidateJobScanConfig, candidateJobScanConfig, db.ScanDone, ""},
+		{"candidate resumed under an edited config", edited, candidateJobScanConfig, db.ScanFailed, "differs from what baseline scan"},
+		{"baseline resumed and finished under the edited config", edited, edited, db.ScanDone, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			j := newCandidateJob(t, fakeRunner{skillRes: SkillResult{Commit: "abc", Report: candidateReport}})
+			digest, err := stagedInputsDigest(tc.baselineConfig, j.repo.ThreatModel, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := j.w.DB.Model(j.baseline).Update("staged_inputs_sha256", digest).Error; err != nil {
+				t.Fatal(err)
+			}
 			sealed, err := buildScanRecipe(j.candidate, "", j.repo.ThreatModel, j.repo.ScanConfig)
 			if err != nil {
 				t.Fatal(err)
