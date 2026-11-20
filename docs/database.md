@@ -528,7 +528,7 @@ Append-only record of each scan reporting a finding, findings imports included (
 
 ## candidate_observations
 
-One row per finding a candidate scan reported. These rows never become findings: the comparison page at `/scans/{id}/experiment` lines them up with the baseline's `finding_observations` by fingerprint, which a candidate computes under its baseline's skill name so a candidate running another skill still matches. A retry writes its own rows and leaves the earlier run's in place. The text and `evidence` columns are untrusted model output, stored and shown as data. Repository deletion removes them.
+One row per finding a candidate scan reported, kept in step with its final report: a finding the run streamed and then left out of the report is dropped, as an ordinary scan's is marked retracted. These rows never become findings: the comparison page at `/scans/{id}/experiment` lines them up with the baseline's `finding_observations` by fingerprint, which a candidate computes under its baseline's skill name so a candidate running another skill still matches. A retry writes its own rows and leaves the earlier run's in place. The text and `evidence` columns are untrusted model output, stored and shown as data. Repository deletion removes them.
 
 | Column | Type | Notes |
 |--------|------|-------|
@@ -566,6 +566,21 @@ Append-only operator decisions on the configuration a candidate scan ran with. A
 | note | text | |
 | applied | text | What an adopt changed and what it left to the operator, e.g. `sets security-deep-dive model to claude-sonnet-5`. Empty on a reject. |
 | created_at | datetime | |
+
+## experiment_baseline_efforts
+
+Analyst time an operator records on one of the ordinary scan's findings from the comparison page, so analyst effort is measured on both sides of an experiment. Finding and observation rows are not touched. Repository deletion removes them.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| id | integer PK | |
+| baseline_scan_id | integer | The ordinary scan. Unique with `fingerprint`, so a second entry for the same finding replaces the first. |
+| repository_id | integer | |
+| fingerprint | text | Fingerprint of the ordinary scan's `finding_observations` row the time was spent on. |
+| effort_minutes | integer | Nullable. Null reads as unavailable in the comparison. |
+| note | text | |
+| created_at | datetime | |
+| updated_at | datetime | |
 
 ## remediation_attempts
 
